@@ -64,6 +64,8 @@ struct DhtMetrics {
     last_error: Option<String>,
     bootstrap_failures: u64,
     listen_addrs: Vec<String>,
+    pending_connections: HashSet<String>,  // Track pending connection attempts
+    last_connection_attempt: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +105,30 @@ impl DhtMetrics {
             self.listen_addrs.push(addr_str);
         }
     }
+
+    fn add_pending_connection(&mut self, addr: &str) -> bool {
+        self.last_connection_attempt = Some(SystemTime::now());
+        self.pending_connections.insert(addr.to_string())
+    }
+
+    fn remove_pending_connection(&mut self, addr: &str) {
+        self.pending_connections.remove(addr);
+    }
+
+    fn is_connection_pending(&self, addr: &str) -> bool {
+        self.pending_connections.contains(addr)
+    }
+
+    fn should_retry_connection(&self) -> bool {
+        // Implement exponential backoff - don't retry if we attempted recently
+        if let Some(last_attempt) = self.last_connection_attempt {
+            let elapsed = SystemTime::now().duration_since(last_attempt).unwrap_or_default();
+            let min_interval = Duration::from_secs(10 + (self.bootstrap_failures.min(6) * 5)); // 10s to 40s max
+            elapsed >= min_interval
+        } else {
+            true
+        }
+    }
 }
 
 async fn run_dht_node(
@@ -113,14 +139,21 @@ async fn run_dht_node(
     connected_peers: Arc<Mutex<HashSet<PeerId>>>,
     metrics: Arc<Mutex<DhtMetrics>>,
 ) {
-    // Periodic bootstrap interval
-    let mut bootstrap_interval = tokio::time::interval(Duration::from_secs(30));
+    // Periodic bootstrap interval - longer initial interval to reduce connection pressure
+    let mut bootstrap_interval = tokio::time::interval(Duration::from_secs(60)); // Start with 60s
     let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
 
     'outer: loop {
         tokio::select! {
             _ = bootstrap_interval.tick() => {
-                // Periodically bootstrap to maintain connections
+                // Periodically bootstrap to maintain connections, but only if we should retry
+                if let Ok(m) = metrics.try_lock() {
+                    if !m.should_retry_connection() {
+                        debug!("Skipping bootstrap - too many recent failures, waiting for backoff");
+                        continue;
+                    }
+                }
+                
                 let _ = swarm.behaviour_mut().kademlia.bootstrap();
                 if let Ok(mut m) = metrics.try_lock() {
                     m.last_bootstrap = Some(SystemTime::now());
@@ -168,8 +201,28 @@ async fn run_dht_node(
                         info!("Searching for file: {}", file_hash);
                     }
                     Some(DhtCommand::ConnectPeer(addr)) => {
+                        // Check if connection is already pending to prevent socket reuse errors
+                        if let Ok(mut m) = metrics.try_lock() {
+                            if m.is_connection_pending(&addr) {
+                                debug!("Connection to {} already pending, skipping", addr);
+                                continue;
+                            }
+                            if !m.should_retry_connection() {
+                                debug!("Connection retry too soon, waiting for backoff period");
+                                continue;
+                            }
+                        }
+
                         info!("Attempting to connect to: {}", addr);
                         if let Ok(multiaddr) = addr.parse::<Multiaddr>() {
+                            // Add to pending connections before attempting dial
+                            if let Ok(mut m) = metrics.try_lock() {
+                                if !m.add_pending_connection(&addr) {
+                                    debug!("Connection to {} already tracked as pending", addr);
+                                    continue;
+                                }
+                            }
+
                             match swarm.dial(multiaddr.clone()) {
                                 Ok(_) => {
                                     info!("✓ Initiated connection to: {}", addr);
@@ -178,6 +231,11 @@ async fn run_dht_node(
                                 }
                                 Err(e) => {
                                     error!("✗ Failed to dial {}: {}", addr, e);
+                                    // Remove from pending on immediate failure
+                                    if let Ok(mut m) = metrics.try_lock() {
+                                        m.remove_pending_connection(&addr);
+                                        m.bootstrap_failures = m.bootstrap_failures.saturating_add(1);
+                                    }
                                     let _ = event_tx.send(DhtEvent::Error(format!("Failed to connect: {}", e))).await;
                                 }
                             }
@@ -220,9 +278,17 @@ async fn run_dht_node(
                             peers.insert(peer_id);
                             peers.len()
                         };
+                        
+                        // Clear pending connection state and update metrics
                         if let Ok(mut m) = metrics.try_lock() {
                             m.last_success = Some(SystemTime::now());
+                            // Remove any pending connections to this peer's addresses
+                            let addr_str = endpoint.get_remote_address().to_string();
+                            m.remove_pending_connection(&addr_str);
+                            // Reset failure count on successful connection
+                            m.bootstrap_failures = 0;
                         }
+                        
                         info!("   Total connected peers: {}", peers_count);
                         let _ = event_tx.send(DhtEvent::PeerConnected(peer_id.to_string())).await;
                     }
@@ -248,7 +314,20 @@ async fn run_dht_node(
                             m.last_error = Some(error.to_string());
                             m.last_error_at = Some(SystemTime::now());
                             m.bootstrap_failures = m.bootstrap_failures.saturating_add(1);
+                            
+                            // Clear any pending connections related to this error
+                            if let Some(peer_id) = peer_id {
+                                // Try to extract multiaddr from error and remove pending connection
+                                let error_msg = error.to_string();
+                                if let Some(start) = error_msg.find("/ip4/") {
+                                    if let Some(end) = error_msg[start..].find(" ") {
+                                        let addr = &error_msg[start..start + end];
+                                        m.remove_pending_connection(addr);
+                                    }
+                                }
+                            }
                         }
+                        
                         if let Some(peer_id) = peer_id {
                             error!("❌ Outgoing connection error to {}: {}", peer_id, error);
                             // Check if this is a bootstrap connection error
@@ -260,6 +339,8 @@ async fn run_dht_node(
                                 warn!("   ℹ Hint: Bootstrap nodes are not accepting connections.");
                             } else if error.to_string().contains("Transport") {
                                 warn!("   ℹ Hint: Transport protocol negotiation failed.");
+                            } else if error.to_string().contains("AddrInUse") || error.to_string().contains("10048") {
+                                warn!("   ℹ Hint: Socket address already in use - connection throttled.");
                             }
                         } else {
                             error!("❌ Outgoing connection error to unknown peer: {}", error);
@@ -454,7 +535,7 @@ impl DhtService {
             mdns,
         };
 
-        // Create the swarm
+        // Create the swarm with improved connection management
         let mut swarm = SwarmBuilder::with_existing_identity(local_key)
             .with_tokio()
             .with_tcp(
@@ -463,9 +544,10 @@ impl DhtService {
                 libp2p::yamux::Config::default,
             )?
             .with_behaviour(|_| behaviour)?
-            .with_swarm_config(
-                |c| c.with_idle_connection_timeout(Duration::from_secs(300)), // 5 minutes
-            )
+            .with_swarm_config(|c| {
+                c.with_idle_connection_timeout(Duration::from_secs(300)) // 5 minutes
+                    .with_max_negotiating_inbound_streams(10)
+            })
             .build();
 
         // Listen on the specified port
