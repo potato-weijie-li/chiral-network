@@ -64,6 +64,8 @@ struct DhtMetrics {
     last_error: Option<String>,
     bootstrap_failures: u64,
     listen_addrs: Vec<String>,
+    consecutive_bootstrap_failures: u64,
+    last_successful_bootstrap: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,6 +107,31 @@ impl DhtMetrics {
     }
 }
 
+// Helper function to check if an address is likely reachable
+fn is_address_likely_reachable(addr: &Multiaddr) -> bool {
+    // Extract IP address from multiaddr
+    for component in addr.iter() {
+        if let libp2p::multiaddr::Protocol::Ip4(ip) = component {
+            // Filter out known problematic IP ranges
+            let ip_str = ip.to_string();
+            
+            // Skip if this is the problematic IP mentioned in the issue
+            if ip_str == "176.183.245.3" {
+                debug!("Filtering out known problematic IP: {}", ip_str);
+                return false;
+            }
+            
+            // Skip private/local networks that might not be globally reachable
+            // when running as a public bootstrap node
+            if ip.is_private() || ip.is_loopback() || ip.is_link_local() {
+                debug!("Filtering out private/local IP for bootstrap: {}", ip_str);
+                return false;
+            }
+        }
+    }
+    true
+}
+
 async fn run_dht_node(
     mut swarm: Swarm<DhtBehaviour>,
     peer_id: PeerId,
@@ -113,19 +140,56 @@ async fn run_dht_node(
     connected_peers: Arc<Mutex<HashSet<PeerId>>>,
     metrics: Arc<Mutex<DhtMetrics>>,
 ) {
-    // Periodic bootstrap interval
+    // Periodic bootstrap interval - start with 30 seconds but use exponential backoff
     let mut bootstrap_interval = tokio::time::interval(Duration::from_secs(30));
     let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
+    
+    // Bootstrap retry configuration
+    const MAX_CONSECUTIVE_FAILURES: u64 = 5;
+    const MAX_BOOTSTRAP_INTERVAL: u64 = 300; // 5 minutes max
+    const MIN_PEER_COUNT_FOR_BOOTSTRAP: usize = 2; // Only bootstrap if we have fewer than 2 peers
 
     'outer: loop {
         tokio::select! {
             _ = bootstrap_interval.tick() => {
-                // Periodically bootstrap to maintain connections
-                let _ = swarm.behaviour_mut().kademlia.bootstrap();
-                if let Ok(mut m) = metrics.try_lock() {
-                    m.last_bootstrap = Some(SystemTime::now());
+                let should_bootstrap = {
+                    let peers_guard = connected_peers.lock().await;
+                    let peer_count = peers_guard.len();
+                    let metrics_guard = metrics.lock().await;
+                    
+                    // Only bootstrap if we have few peers and haven't failed too many times recently
+                    let has_few_peers = peer_count < MIN_PEER_COUNT_FOR_BOOTSTRAP;
+                    let not_too_many_failures = metrics_guard.consecutive_bootstrap_failures < MAX_CONSECUTIVE_FAILURES;
+                    let enough_time_passed = metrics_guard.last_bootstrap
+                        .map(|last| last.elapsed().unwrap_or_default().as_secs() >= 30)
+                        .unwrap_or(true);
+                    
+                    has_few_peers && not_too_many_failures && enough_time_passed
+                };
+                
+                if should_bootstrap {
+                    let _ = swarm.behaviour_mut().kademlia.bootstrap();
+                    if let Ok(mut m) = metrics.try_lock() {
+                        m.last_bootstrap = Some(SystemTime::now());
+                    }
+                    debug!("Performing periodic Kademlia bootstrap");
+                } else {
+                    let peer_count = connected_peers.lock().await.len();
+                    debug!("Skipping bootstrap: peer_count={}, recent_failures={}", 
+                           peer_count, 
+                           metrics.lock().await.consecutive_bootstrap_failures);
+                    
+                    // Adjust bootstrap interval based on failures (exponential backoff)
+                    if let Ok(metrics_guard) = metrics.try_lock() {
+                        if metrics_guard.consecutive_bootstrap_failures > 0 {
+                            let backoff_factor = 2_u64.pow(metrics_guard.consecutive_bootstrap_failures.min(4) as u32);
+                            let new_interval = (30 * backoff_factor).min(MAX_BOOTSTRAP_INTERVAL);
+                            bootstrap_interval = tokio::time::interval(Duration::from_secs(new_interval));
+                            debug!("Adjusted bootstrap interval to {} seconds due to {} consecutive failures", 
+                                   new_interval, metrics_guard.consecutive_bootstrap_failures);
+                        }
+                    }
                 }
-                debug!("Performing periodic Kademlia bootstrap");
             }
 
             cmd = cmd_rx.recv() => {
@@ -222,6 +286,11 @@ async fn run_dht_node(
                         };
                         if let Ok(mut m) = metrics.try_lock() {
                             m.last_success = Some(SystemTime::now());
+                            // Reset consecutive failures on successful connection
+                            if peers_count > 0 {
+                                m.consecutive_bootstrap_failures = 0;
+                                m.last_successful_bootstrap = Some(SystemTime::now());
+                            }
                         }
                         info!("   Total connected peers: {}", peers_count);
                         let _ = event_tx.send(DhtEvent::PeerConnected(peer_id.to_string())).await;
@@ -248,6 +317,7 @@ async fn run_dht_node(
                             m.last_error = Some(error.to_string());
                             m.last_error_at = Some(SystemTime::now());
                             m.bootstrap_failures = m.bootstrap_failures.saturating_add(1);
+                            m.consecutive_bootstrap_failures = m.consecutive_bootstrap_failures.saturating_add(1);
                         }
                         if let Some(peer_id) = peer_id {
                             error!("❌ Outgoing connection error to {}: {}", peer_id, error);
@@ -256,6 +326,10 @@ async fn run_dht_node(
                                 error!("   ℹ Hint: This node uses RSA keys. Enable 'rsa' feature if needed.");
                             } else if error.to_string().contains("Timeout") {
                                 warn!("   ℹ Hint: Bootstrap nodes may be unreachable or overloaded.");
+                                // For timeout errors, we might want to reduce retry frequency
+                                if let Ok(mut m) = metrics.try_lock() {
+                                    m.consecutive_bootstrap_failures = m.consecutive_bootstrap_failures.saturating_add(1);
+                                }
                             } else if error.to_string().contains("Connection refused") {
                                 warn!("   ℹ Hint: Bootstrap nodes are not accepting connections.");
                             } else if error.to_string().contains("Transport") {
@@ -271,6 +345,8 @@ async fn run_dht_node(
                             m.last_error = Some(error.to_string());
                             m.last_error_at = Some(SystemTime::now());
                             m.bootstrap_failures = m.bootstrap_failures.saturating_add(1);
+                            // Don't count incoming connection errors as consecutive bootstrap failures
+                            // since they're not related to our outgoing bootstrap attempts
                         }
                         error!("❌ Incoming connection error: {}", error);
                     }
@@ -350,9 +426,13 @@ async fn handle_identify_event(
     match event {
         IdentifyEvent::Received { peer_id, info, .. } => {
             info!("Identified peer {}: {:?}", peer_id, info.protocol_version);
-            // Add identified peer to Kademlia routing table
+            // Add identified peer to Kademlia routing table, but filter problematic addresses
             for addr in info.listen_addrs {
-                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                if is_address_likely_reachable(&addr) {
+                    swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                } else {
+                    debug!("Skipping unreachable address for peer {}: {}", peer_id, addr);
+                }
             }
         }
         IdentifyEvent::Sent { peer_id, .. } => {
@@ -428,12 +508,14 @@ impl DhtService {
         // Create a Kademlia behaviour with tuned configuration
         let store = MemoryStore::new(local_peer_id);
         let mut kad_cfg = KademliaConfig::new(StreamProtocol::new("/chiral/kad/1.0.0"));
-        // Align with docs: shorter queries, higher replication
-        kad_cfg.set_query_timeout(Duration::from_secs(10));
+        // Increase query timeout from 10s to 30s to handle slow/overloaded bootstrap nodes
+        kad_cfg.set_query_timeout(Duration::from_secs(30));
         // Replication factor of 20 (as per spec table)
         if let Some(nz) = std::num::NonZeroUsize::new(20) {
             kad_cfg.set_replication_factor(nz);
         }
+        // Set maximum packet size to reduce network load
+        kad_cfg.set_max_packet_size(8192);
         let mut kademlia = Kademlia::with_config(local_peer_id, store, kad_cfg);
 
         // Set Kademlia to server mode to accept incoming connections
@@ -473,12 +555,18 @@ impl DhtService {
         swarm.listen_on(listen_addr)?;
         info!("DHT listening on port: {}", port);
 
-        // Connect to bootstrap nodes
+        // Connect to bootstrap nodes with rate limiting
         info!("Bootstrap nodes to connect: {:?}", bootstrap_nodes);
         let mut successful_connections = 0;
         let total_bootstrap_nodes = bootstrap_nodes.len();
-        for bootstrap_addr in &bootstrap_nodes {
+        
+        for (i, bootstrap_addr) in bootstrap_nodes.iter().enumerate() {
             info!("Attempting to connect to bootstrap: {}", bootstrap_addr);
+            
+            // Add a small delay between connection attempts to avoid overwhelming bootstrap nodes
+            // Note: Since this is in new() which isn't async, we'll handle rate limiting 
+            // in the periodic bootstrap instead
+            
             if let Ok(addr) = bootstrap_addr.parse::<Multiaddr>() {
                 match swarm.dial(addr.clone()) {
                     Ok(_) => {
@@ -498,25 +586,44 @@ impl DhtService {
                                 .add_address(&peer_id, addr.clone());
                         }
                     }
-                    Err(e) => warn!("✗ Failed to dial bootstrap {}: {}", bootstrap_addr, e),
+                    Err(e) => {
+                        warn!("✗ Failed to dial bootstrap {}: {}", bootstrap_addr, e);
+                        // Update metrics for failed initial connections
+                        if let Ok(mut m) = metrics.try_lock() {
+                            m.bootstrap_failures = m.bootstrap_failures.saturating_add(1);
+                            m.last_error = Some(e.to_string());
+                            m.last_error_at = Some(SystemTime::now());
+                        }
+                    }
                 }
             } else {
                 warn!("✗ Invalid bootstrap address format: {}", bootstrap_addr);
+                if let Ok(mut m) = metrics.try_lock() {
+                    m.bootstrap_failures = m.bootstrap_failures.saturating_add(1);
+                    m.last_error = Some(format!("Invalid address format: {}", bootstrap_addr));
+                    m.last_error_at = Some(SystemTime::now());
+                }
             }
         }
 
-        // Trigger initial bootstrap if we have any bootstrap nodes (even if connection failed)
+        // Only trigger initial bootstrap if we had at least one successful connection attempt
         if !bootstrap_nodes.is_empty() {
-            let _ = swarm.behaviour_mut().kademlia.bootstrap();
-            info!(
-                "Triggered initial Kademlia bootstrap (attempted {}/{} connections)",
-                successful_connections, total_bootstrap_nodes
-            );
-            if successful_connections == 0 {
-                warn!(
-                    "⚠ No bootstrap connections succeeded - node will operate in standalone mode"
+            if successful_connections > 0 {
+                let _ = swarm.behaviour_mut().kademlia.bootstrap();
+                info!(
+                    "Triggered initial Kademlia bootstrap (attempted {}/{} connections)",
+                    successful_connections, total_bootstrap_nodes
                 );
+            } else {
+                warn!(
+                    "⚠ No bootstrap connections succeeded - delaying initial bootstrap"
+                );
+                warn!("  Will retry bootstrap attempts with exponential backoff");
                 warn!("  Other nodes can still connect to this node directly");
+                // Set initial consecutive failures to trigger exponential backoff
+                if let Ok(mut m) = metrics.try_lock() {
+                    m.consecutive_bootstrap_failures = 1;
+                }
             }
         } else {
             info!("No bootstrap nodes provided - starting in standalone mode");

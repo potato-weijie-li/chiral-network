@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 // Default bootstrap nodes for network connectivity
 export const DEFAULT_BOOTSTRAP_NODES = [
   "/ip4/54.198.145.146/tcp/4001/p2p/12D3KooWNHdYWRTe98KMF1cDXXqGXvNjd1SAchDaeP5o4MsoJLu2",
+  // Adding the bootstrap node mentioned in the issue
+  "/ip4/130.245.173.105/tcp/4001/p2p/12D3KooWBs1vwFHXEpnzvGfCw6igP4b9xd1ZdGWVXGYnaSr44NJ3",
 ];
 
 export interface DhtConfig {
