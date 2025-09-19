@@ -9,6 +9,9 @@ mod file_transfer;
 mod geth_downloader;
 mod headless;
 mod keystore;
+mod manager;
+
+use manager::{ChunkManager, FileManifest, StorageStats};
 
 use dht::{DhtEvent, DhtMetricsSnapshot, DhtService, FileMetadata};
 use ethereum::{
@@ -41,6 +44,7 @@ struct AppState {
     miner_address: Mutex<Option<String>>,
     dht: Mutex<Option<Arc<DhtService>>>,
     file_transfer: Mutex<Option<Arc<FileTransferService>>>,
+    chunk_manager: Mutex<Option<ChunkManager>>,
 }
 
 #[tauri::command]
@@ -755,6 +759,113 @@ fn get_available_storage() -> f64 {
     (storage as f64 / 1024.0 / 1024.0 / 1024.0).floor()
 }
 
+/// Initialize the chunk manager with a storage path
+#[tauri::command]
+async fn init_chunk_manager(
+    state: State<'_, AppState>,
+    storage_path: String,
+) -> Result<(), String> {
+    let path = std::path::PathBuf::from(storage_path);
+    let chunk_manager = ChunkManager::new(path);
+    
+    let mut manager_guard = state.chunk_manager.lock().map_err(|e| e.to_string())?;
+    *manager_guard = Some(chunk_manager);
+    
+    Ok(())
+}
+
+/// Store a file using content-addressed chunking
+#[tauri::command]
+async fn store_file_with_chunks(
+    state: State<'_, AppState>,
+    file_path: String,
+    encrypt: Option<bool>,
+) -> Result<FileManifest, String> {
+    let manager_guard = state.chunk_manager.lock().map_err(|e| e.to_string())?;
+    let manager = manager_guard.as_ref()
+        .ok_or("Chunk manager not initialized")?;
+    
+    let path = std::path::Path::new(&file_path);
+    
+    // For now, skip encryption by passing None as recipient key
+    // In a real implementation, this would come from the DHT or user selection
+    manager.store_file_with_manifest(path, None)
+}
+
+/// Load a file manifest by its hash
+#[tauri::command]
+async fn load_file_manifest(
+    state: State<'_, AppState>,
+    file_hash: String,
+) -> Result<FileManifest, String> {
+    let manager_guard = state.chunk_manager.lock().map_err(|e| e.to_string())?;
+    let manager = manager_guard.as_ref()
+        .ok_or("Chunk manager not initialized")?;
+    
+    manager.load_manifest(&file_hash)
+}
+
+/// Reconstruct a file from its chunks
+#[tauri::command]
+async fn reconstruct_file_from_chunks(
+    state: State<'_, AppState>,
+    file_hash: String,
+    output_path: String,
+) -> Result<(), String> {
+    let manager_guard = state.chunk_manager.lock().map_err(|e| e.to_string())?;
+    let manager = manager_guard.as_ref()
+        .ok_or("Chunk manager not initialized")?;
+    
+    // Load manifest first
+    let manifest = manager.load_manifest(&file_hash)?;
+    
+    // Reconstruct file (without decryption key for now)
+    let output_path = std::path::Path::new(&output_path);
+    manager.reconstruct_file(&manifest, output_path, None)
+}
+
+/// Check which chunks are missing for a file
+#[tauri::command]
+async fn verify_chunks_available(
+    state: State<'_, AppState>,
+    file_hash: String,
+) -> Result<Vec<String>, String> {
+    let manager_guard = state.chunk_manager.lock().map_err(|e| e.to_string())?;
+    let manager = manager_guard.as_ref()
+        .ok_or("Chunk manager not initialized")?;
+    
+    let manifest = manager.load_manifest(&file_hash)?;
+    manager.verify_chunks_available(&manifest)
+}
+
+/// Get storage statistics
+#[tauri::command]
+async fn get_storage_stats(
+    state: State<'_, AppState>,
+) -> Result<StorageStats, String> {
+    let manager_guard = state.chunk_manager.lock().map_err(|e| e.to_string())?;
+    let manager = manager_guard.as_ref()
+        .ok_or("Chunk manager not initialized")?;
+    
+    manager.get_storage_stats()
+}
+
+/// Set custom chunk size (must be called before storing files)
+#[tauri::command]
+async fn set_chunk_size(
+    state: State<'_, AppState>,
+    size_mb: f64,
+) -> Result<(), String> {
+    let mut manager_guard = state.chunk_manager.lock().map_err(|e| e.to_string())?;
+    if let Some(manager) = manager_guard.as_mut() {
+        let size_bytes = (size_mb * 1024.0 * 1024.0) as usize;
+        manager.set_chunk_size(size_bytes);
+        Ok(())
+    } else {
+        Err("Chunk manager not initialized".to_string())
+    }
+}
+
 fn main() {
     // Initialize logging for debug builds
     #[cfg(debug_assertions)]
@@ -800,6 +911,7 @@ fn main() {
             miner_address: Mutex::new(None),
             dht: Mutex::new(None),
             file_transfer: Mutex::new(None),
+            chunk_manager: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             create_chiral_account,
@@ -843,7 +955,14 @@ fn main() {
             download_file_from_network,
             get_file_transfer_events,
             show_in_folder,
-            get_available_storage
+            get_available_storage,
+            init_chunk_manager,
+            store_file_with_chunks,
+            load_file_manifest,
+            reconstruct_file_from_chunks,
+            verify_chunks_available,
+            get_storage_stats,
+            set_chunk_size
         ])
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_os::init())
