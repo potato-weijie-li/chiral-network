@@ -750,6 +750,21 @@ async fn get_file_transfer_events(state: State<'_, AppState>) -> Result<Vec<Stri
 }
 
 #[tauri::command]
+async fn get_stored_files(state: State<'_, AppState>) -> Result<Vec<(String, String, u64)>, String> {
+    let ft = {
+        let ft_guard = state.file_transfer.lock().map_err(|e| e.to_string())?;
+        ft_guard.as_ref().cloned()
+    };
+
+    if let Some(ft) = ft {
+        let files = ft.get_stored_files().await?;
+        Ok(files)
+    } else {
+        Err("File transfer service is not running".to_string())
+    }
+}
+
+#[tauri::command]
 fn get_available_storage() -> f64 {
     let storage = available_space(Path::new("/")).unwrap_or(0);
     (storage as f64 / 1024.0 / 1024.0 / 1024.0).floor()
@@ -842,6 +857,7 @@ fn main() {
             upload_file_data_to_network,
             download_file_from_network,
             get_file_transfer_events,
+            get_stored_files,
             show_in_folder,
             get_available_storage
         ])

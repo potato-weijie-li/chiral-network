@@ -10,7 +10,7 @@
     import SettingsPage from './pages/Settings.svelte'
     import MiningPage from './pages/Mining.svelte'
     import NotFound from './pages/NotFound.svelte'
-    import { networkStatus } from './lib/stores'
+    import { networkStatus, loadStoredFiles } from './lib/stores'
     import { Router, type RouteConfig, goto } from '@mateothegreat/svelte5-router';
     import {onMount, setContext} from 'svelte';
     import { tick } from 'svelte';
@@ -46,6 +46,9 @@
 
         // set the currentPage var
         syncFromUrl();
+
+        // Load stored files from backend
+        await loadStoredFiles();
 
         // Start network monitoring
         stopNetworkMonitoring = startNetworkMonitoring();

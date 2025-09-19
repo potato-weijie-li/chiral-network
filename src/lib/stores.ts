@@ -249,6 +249,51 @@ export const userLocation = writable<string>("US-East");
 export const etcAccount = writable<ETCAccount | null>(null);
 export const blacklist = writable<BlacklistEntry[]>(blacklistedPeers);
 
+// File loading functionality
+import { FileService } from './services/fileService';
+
+/**
+ * Load stored files from the backend and update the files store
+ */
+export async function loadStoredFiles(): Promise<void> {
+  try {
+    // Start the file transfer service first
+    const serviceStarted = await FileService.startFileTransferService();
+    if (!serviceStarted) {
+      console.warn('File transfer service not available, using dummy data');
+      return;
+    }
+
+    // Get stored files from backend
+    const storedFiles = await FileService.getStoredFiles();
+    
+    if (storedFiles.length > 0) {
+      // Convert backend files to FileItem format
+      const backendFiles: FileItem[] = storedFiles.map((file, index) => ({
+        id: `backend-${index}`,
+        name: file.name,
+        hash: file.hash,
+        size: file.size,
+        status: 'seeding' as const,
+        progress: 100,
+        seeders: 1,
+        leechers: 0,
+        uploadDate: new Date(), // We don't have upload date from backend yet
+      }));
+
+      // Replace dummy files with real backend files
+      files.set(backendFiles);
+      console.log(`Loaded ${backendFiles.length} files from backend`);
+    } else {
+      // No files in backend, keep dummy data for demonstration
+      console.log('No files found in backend, keeping dummy data');
+    }
+  } catch (error) {
+    console.error('Failed to load stored files:', error);
+    // Keep dummy data on error
+  }
+}
+
 interface RecentBlock {
   id: string;
   hash: string;

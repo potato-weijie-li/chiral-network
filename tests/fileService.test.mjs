@@ -12,6 +12,11 @@ const mockTauriApi = {
         throw new Error('Mock upload failed');
       case 'start_file_transfer_service':
         return null; // Success
+      case 'get_stored_files':
+        return [
+          ['hash1', 'file1.txt', 1024],
+          ['hash2', 'file2.txt', 2048]
+        ];
       default:
         throw new Error(`Unknown command: ${command}`);
     }
@@ -34,6 +39,8 @@ class MockFile {
 
 // Mock FileService with dependency injection for testing
 class FileService {
+  static serviceStarted = false;
+
   static async uploadFile(file, tauriApi = mockTauriApi) {
     try {
       const arrayBuffer = await file.arrayBuffer();
@@ -57,16 +64,35 @@ class FileService {
   }
 
   static async startFileTransferService(tauriApi = mockTauriApi) {
+    if (this.serviceStarted) {
+      return true; // Already started
+    }
+
     try {
       await tauriApi.invoke('start_file_transfer_service');
+      this.serviceStarted = true;
       return true;
     } catch (error) {
       return false;
     }
   }
+
+  static async getStoredFiles(tauriApi = mockTauriApi) {
+    try {
+      const files = await tauriApi.invoke('get_stored_files');
+      return files.map(([hash, name, size]) => ({ hash, name, size }));
+    } catch (error) {
+      return [];
+    }
+  }
+
+  static resetServiceState() {
+    this.serviceStarted = false;
+  }
 }
 
 test('FileService.uploadFile handles successful upload', async () => {
+  FileService.resetServiceState();
   const mockFile = new MockFile('test.txt', 13, 'Hello, world!');
   const result = await FileService.uploadFile(mockFile);
 
@@ -76,6 +102,7 @@ test('FileService.uploadFile handles successful upload', async () => {
 });
 
 test('FileService.uploadFile handles upload failure', async () => {
+  FileService.resetServiceState();
   const mockFile = new MockFile('fail.txt', 4, 'fail');
   
   const failingMockApi = {
@@ -92,11 +119,21 @@ test('FileService.uploadFile handles upload failure', async () => {
 });
 
 test('FileService.startFileTransferService returns true on success', async () => {
+  FileService.resetServiceState();
   const result = await FileService.startFileTransferService();
   assert.equal(result, true);
 });
 
+test('FileService.startFileTransferService avoids multiple starts', async () => {
+  FileService.resetServiceState();
+  const result1 = await FileService.startFileTransferService();
+  const result2 = await FileService.startFileTransferService(); // Should not call invoke again
+  assert.equal(result1, true);
+  assert.equal(result2, true);
+});
+
 test('FileService.startFileTransferService returns false on failure', async () => {
+  FileService.resetServiceState();
   const failingMockApi = {
     invoke: async () => {
       throw new Error('Service unavailable');
@@ -107,7 +144,29 @@ test('FileService.startFileTransferService returns false on failure', async () =
   assert.equal(result, false);
 });
 
+test('FileService.getStoredFiles returns formatted files', async () => {
+  FileService.resetServiceState();
+  const result = await FileService.getStoredFiles();
+  
+  assert.equal(result.length, 2);
+  assert.deepEqual(result[0], { hash: 'hash1', name: 'file1.txt', size: 1024 });
+  assert.deepEqual(result[1], { hash: 'hash2', name: 'file2.txt', size: 2048 });
+});
+
+test('FileService.getStoredFiles handles errors', async () => {
+  FileService.resetServiceState();
+  const failingMockApi = {
+    invoke: async () => {
+      throw new Error('Backend error');
+    }
+  };
+
+  const result = await FileService.getStoredFiles(failingMockApi);
+  assert.deepEqual(result, []);
+});
+
 test('FileService.uploadFile converts file to byte array correctly', async () => {
+  FileService.resetServiceState();
   const mockFile = new MockFile('test.txt', 5, 'hello');
   
   const captureApi = {

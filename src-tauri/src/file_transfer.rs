@@ -52,7 +52,7 @@ pub enum FileTransferEvent {
 pub struct FileTransferService {
     cmd_tx: mpsc::Sender<FileTransferCommand>,
     event_rx: Arc<Mutex<mpsc::Receiver<FileTransferEvent>>>,
-    stored_files: Arc<Mutex<HashMap<String, (String, Vec<u8>)>>>, // hash -> (name, data)
+    stored_files: Arc<Mutex<HashMap<String, (String, Vec<u8>, u64)>>>, // hash -> (name, data, size)
 }
 
 impl FileTransferService {
@@ -78,7 +78,7 @@ impl FileTransferService {
     async fn run_file_transfer_service(
         mut cmd_rx: mpsc::Receiver<FileTransferCommand>,
         event_tx: mpsc::Sender<FileTransferEvent>,
-        stored_files: Arc<Mutex<HashMap<String, (String, Vec<u8>)>>>,
+        stored_files: Arc<Mutex<HashMap<String, (String, Vec<u8>, u64)>>>,
     ) {
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
@@ -144,7 +144,7 @@ impl FileTransferService {
     async fn handle_upload_file(
         file_path: &str,
         file_name: &str,
-        stored_files: &Arc<Mutex<HashMap<String, (String, Vec<u8>)>>>,
+        stored_files: &Arc<Mutex<HashMap<String, (String, Vec<u8>, u64)>>>,
     ) -> Result<String, String> {
         // Read the file
         let file_data = tokio::fs::read(file_path)
@@ -153,11 +153,12 @@ impl FileTransferService {
 
         // Calculate file hash
         let file_hash = Self::calculate_file_hash(&file_data);
+        let file_size = file_data.len() as u64;
 
         // Store the file in memory (in a real implementation, this would be persistent storage)
         {
             let mut files = stored_files.lock().await;
-            files.insert(file_hash.clone(), (file_name.to_string(), file_data));
+            files.insert(file_hash.clone(), (file_name.to_string(), file_data, file_size));
         }
 
         Ok(file_hash)
@@ -166,10 +167,10 @@ impl FileTransferService {
     async fn handle_download_file(
         file_hash: &str,
         output_path: &str,
-        stored_files: &Arc<Mutex<HashMap<String, (String, Vec<u8>)>>>,
+        stored_files: &Arc<Mutex<HashMap<String, (String, Vec<u8>, u64)>>>,
     ) -> Result<(), String> {
         // Check if we have the file locally
-        let (file_name, file_data) = {
+        let (file_name, file_data, _file_size) = {
             let files = stored_files.lock().await;
             files
                 .get(file_hash)
@@ -217,11 +218,11 @@ impl FileTransferService {
             .map_err(|e| e.to_string())
     }
 
-    pub async fn get_stored_files(&self) -> Result<Vec<(String, String)>, String> {
+    pub async fn get_stored_files(&self) -> Result<Vec<(String, String, u64)>, String> {
         let files = self.stored_files.lock().await;
         Ok(files
             .iter()
-            .map(|(hash, (name, _))| (hash.clone(), name.clone()))
+            .map(|(hash, (name, _, size))| (hash.clone(), name.clone(), *size))
             .collect())
     }
 
@@ -240,7 +241,8 @@ impl FileTransferService {
     }
 
     pub async fn store_file_data(&self, file_hash: String, file_name: String, file_data: Vec<u8>) {
+        let file_size = file_data.len() as u64;
         let mut stored_files = self.stored_files.lock().await;
-        stored_files.insert(file_hash, (file_name, file_data));
+        stored_files.insert(file_hash, (file_name, file_data, file_size));
     }
 }

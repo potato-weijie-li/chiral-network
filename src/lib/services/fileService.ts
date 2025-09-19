@@ -6,7 +6,15 @@ export interface UploadResult {
   error?: string;
 }
 
+export interface StoredFile {
+  hash: string;
+  name: string;
+  size: number;
+}
+
 export class FileService {
+  private static serviceStarted = false;
+
   /**
    * Upload file data to the network via Tauri backend
    * @param file The File object to upload
@@ -41,12 +49,37 @@ export class FileService {
    * Start the file transfer service if not already running
    */
   static async startFileTransferService(): Promise<boolean> {
+    if (this.serviceStarted) {
+      return true; // Already started
+    }
+
     try {
       await invoke('start_file_transfer_service');
+      this.serviceStarted = true;
       return true;
     } catch (error) {
       console.error('Failed to start file transfer service:', error);
       return false;
     }
+  }
+
+  /**
+   * Get all stored files from the backend
+   */
+  static async getStoredFiles(): Promise<StoredFile[]> {
+    try {
+      const files = await invoke<[string, string, number][]>('get_stored_files');
+      return files.map(([hash, name, size]) => ({ hash, name, size }));
+    } catch (error) {
+      console.error('Failed to get stored files:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Reset the service started flag (for testing or app restart)
+   */
+  static resetServiceState(): void {
+    this.serviceStarted = false;
   }
 }
