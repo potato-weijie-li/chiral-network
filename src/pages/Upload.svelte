@@ -99,8 +99,13 @@
 
         files.update(f => [...f, newFile]);
 
-        // Upload file to backend network
-        const uploadResult = await FileService.uploadFile(file);
+        // Upload file to backend network with default options
+        // Following documented API specification for file uploads
+        const uploadOptions = {
+          encryption: false, // Could be configurable in settings
+          replicationFactor: 3, // Default replication as per docs
+        };
+        const uploadResult = await FileService.uploadFile(file, uploadOptions);
 
         if (uploadResult.success && uploadResult.hash) {
           // Update file with successful upload

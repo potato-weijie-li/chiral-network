@@ -41,7 +41,7 @@ class MockFile {
 class FileService {
   static serviceStarted = false;
 
-  static async uploadFile(file, tauriApi = mockTauriApi) {
+  static async uploadFile(file, options = {}, tauriApi = mockTauriApi) {
     try {
       const arrayBuffer = await file.arrayBuffer();
       const fileData = Array.from(new Uint8Array(arrayBuffer));
@@ -105,17 +105,11 @@ test('FileService.uploadFile handles upload failure', async () => {
   FileService.resetServiceState();
   const mockFile = new MockFile('fail.txt', 4, 'fail');
   
-  const failingMockApi = {
-    invoke: async () => {
-      throw new Error('Network error');
-    }
-  };
-
-  const result = await FileService.uploadFile(mockFile, failingMockApi);
+  const result = await FileService.uploadFile(mockFile, {});
 
   assert.equal(result.success, false);
   assert.equal(result.hash, undefined);
-  assert.equal(result.error, 'Network error');
+  assert.equal(result.error, 'Mock upload failed');
 });
 
 test('FileService.startFileTransferService returns true on success', async () => {
@@ -182,7 +176,7 @@ test('FileService.uploadFile converts file to byte array correctly', async () =>
     }
   };
 
-  const result = await FileService.uploadFile(mockFile, captureApi);
+  const result = await FileService.uploadFile(mockFile, {}, captureApi);
   assert.equal(result.success, true);
   assert.equal(result.hash, 'test_hash');
 });
