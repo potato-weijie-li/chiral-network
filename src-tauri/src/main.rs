@@ -654,6 +654,7 @@ async fn upload_file_data_to_network(
     let _ = start_file_transfer_service(state.clone()).await;
     let _ = start_market_service(state.clone()).await;
     let _ = start_storage_node_service(state.clone(), "local_node".to_string(), 10).await; // 10GB capacity
+    let _ = start_dht_service(state.clone(), "127.0.0.1:4001".to_string()).await; // Auto-start DHT
 
     // Step 1: Generate Hash
     let file_hash = file_transfer::FileTransferService::calculate_file_hash(&file_data);
@@ -720,10 +721,9 @@ async fn upload_file_data_to_network(
             Ok(nodes) => {
                 info!("Found {} storage nodes for file", nodes.len());
                 
-                // Upload chunks to storage nodes if we have chunks
+                // For large files, upload chunks to storage nodes
+                let mut confirmations = Vec::new();
                 if !chunks.is_empty() {
-                    let mut confirmations = Vec::new();
-                    
                     for chunk in &chunks {
                         // Read chunk data from disk
                         let chunk_path = std::env::temp_dir().join("chunks").join(&chunk.hash);
@@ -755,33 +755,56 @@ async fn upload_file_data_to_network(
                             }
                         }
                     }
-                    
-                    // Register this file with the market
-                    let supplier = market::FileSupplier {
-                        supplier_id: "local_node".to_string(),
-                        file_hash: file_hash.clone(),
-                        ip: "127.0.0.1".to_string(),
-                        port: 8080,
-                        price: 0.001,
-                        bandwidth: 100,
-                        reputation: 5.0,
-                        last_seen: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs(),
-                    };
-                    
-                    if let Err(e) = market.register_file_supplier(file_hash.clone(), supplier).await {
-                        warn!("Failed to register file supplier: {}", e);
-                    } else {
-                        info!("File supplier registered successfully");
-                    }
-                    
-                    confirmations
                 } else {
-                    info!("No chunks to upload to storage nodes");
-                    Vec::new()
+                    // For small files, store the entire file in storage node as a single chunk
+                    let storage_service = {
+                        let storage_guard = state.storage_node.lock().map_err(|e| e.to_string())?;
+                        storage_guard.as_ref().cloned()
+                    };
+
+                    if let Some(storage) = storage_service {
+                        let upload_request = storage_node::ChunkUploadRequest {
+                            chunk_hash: file_hash.clone(), // Use file hash as chunk hash for small files
+                            chunk_data: file_data.clone(),
+                            file_hash: file_hash.clone(),
+                            chunk_index: 0, // Single chunk
+                            payment_tx: None,
+                        };
+
+                        match storage.store_chunk(upload_request).await {
+                            Ok(response) => {
+                                info!("Small file {} stored on local storage node", file_hash);
+                                confirmations.push(response);
+                            }
+                            Err(e) => {
+                                warn!("Failed to store small file {} on local storage node: {}", file_hash, e);
+                            }
+                        }
+                    }
                 }
+                
+                // Register this file with the market (for ALL files)
+                let supplier = market::FileSupplier {
+                    supplier_id: "local_node".to_string(),
+                    file_hash: file_hash.clone(),
+                    ip: "127.0.0.1".to_string(),
+                    port: 8080,
+                    price: 0.001,
+                    bandwidth: 100,
+                    reputation: 5.0,
+                    last_seen: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                };
+                
+                if let Err(e) = market.register_file_supplier(file_hash.clone(), supplier).await {
+                    warn!("Failed to register file supplier: {}", e);
+                } else {
+                    info!("File supplier registered successfully");
+                }
+                
+                confirmations
             }
             Err(e) => {
                 warn!("Failed to query storage nodes: {}", e);
