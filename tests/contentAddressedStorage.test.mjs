@@ -111,3 +111,83 @@ test('Manifest integrity hash calculation logic', () => {
   assert.ok(manifestJson.length > 0);
   assert.ok(!manifestJson.includes('"manifest_hash"'));
 });
+
+test('Complete workflow simulation', () => {
+  // Simulate the complete content-addressed storage workflow
+  
+  // 1. File input
+  const inputFile = {
+    name: "example.pdf",
+    size: 3145728, // 3MB
+    data: new Uint8Array(3145728) // Mock file data
+  };
+  
+  // 2. Calculate chunks
+  const chunkSize = 1048576; // 1MB
+  const totalChunks = Math.ceil(inputFile.size / chunkSize);
+  
+  assert.equal(totalChunks, 3);
+  
+  // 3. Create mock chunks
+  const chunks = [];
+  let offset = 0;
+  
+  for (let i = 0; i < totalChunks; i++) {
+    const chunkStart = i * chunkSize;
+    const chunkEnd = Math.min((i + 1) * chunkSize, inputFile.size);
+    const size = chunkEnd - chunkStart;
+    
+    chunks.push({
+      index: i,
+      hash: `mock_hash_${i}`,
+      size: size,
+      encrypted_size: size + 16, // Mock encryption overhead
+      offset: offset
+    });
+    
+    offset += size;
+  }
+  
+  // 4. Create manifest
+  const manifest = {
+    version: "1.0",
+    file_hash: "mock_file_hash",
+    file_name: inputFile.name,
+    file_size: inputFile.size,
+    mime_type: "application/pdf",
+    chunk_size: chunkSize,
+    total_chunks: totalChunks,
+    chunks: chunks,
+    timestamps: {
+      created: Date.now() / 1000,
+      modified: Date.now() / 1000,
+      accessed: Date.now() / 1000
+    },
+    manifest_hash: "mock_manifest_hash"
+  };
+  
+  // 5. Verify manifest structure
+  assert.equal(manifest.chunks.length, 3);
+  assert.equal(manifest.chunks[0].size, chunkSize);
+  assert.equal(manifest.chunks[1].size, chunkSize);
+  assert.equal(manifest.chunks[2].size, inputFile.size - (2 * chunkSize));
+  
+  // 6. Verify offsets are correct
+  assert.equal(manifest.chunks[0].offset, 0);
+  assert.equal(manifest.chunks[1].offset, chunkSize);
+  assert.equal(manifest.chunks[2].offset, 2 * chunkSize);
+  
+  // 7. Simulate deduplication check
+  const existingChunks = new Set(['mock_hash_1']); // Chunk 1 already exists
+  const newChunks = chunks.filter(chunk => !existingChunks.has(chunk.hash));
+  
+  assert.equal(newChunks.length, 2); // Only chunks 0 and 2 are new
+  
+  // 8. Simulate reconstruction verification
+  let reconstructedSize = 0;
+  chunks.forEach(chunk => {
+    reconstructedSize += chunk.size;
+  });
+  
+  assert.equal(reconstructedSize, inputFile.size);
+});
