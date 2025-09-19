@@ -1,8 +1,9 @@
 use sha2::{Sha256, Digest};
-use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
+use aes_gcm::{Aes256Gcm, Key, KeyInit, AeadCore};
 use aes_gcm::aead::{Aead, OsRng};
+use rand::RngCore;
 use std::fs::{File, self};
-use std::io::{Read, Error, Write};
+use std::io::{Read, Error};
 use std::path::{Path, PathBuf};
 use x25519_dalek::PublicKey;
 
@@ -37,7 +38,8 @@ impl ChunkManager {
         recipient_public_key: &PublicKey,
     ) -> Result<(Vec<ChunkInfo>, EncryptedAesKeyBundle), String> {
         let mut key_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut key_bytes);
+        let mut rng = OsRng;
+        rng.fill_bytes(&mut key_bytes);
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
 
         let mut file = File::open(file_path).map_err(|e| e.to_string())?;
@@ -75,7 +77,7 @@ impl ChunkManager {
     // This function now returns the nonce and ciphertext combined for easier storage
     fn encrypt_chunk(&self, data: &[u8], key: &Key<Aes256Gcm>) -> Result<Vec<u8>, String> {
         let cipher = Aes256Gcm::new(key);
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // Generate a unique nonce for each chunk
+        let nonce = Aes256Gcm::generate_nonce(OsRng); // Generate a unique nonce for each chunk
 
         let ciphertext = cipher.encrypt(&nonce, data).map_err(|e| e.to_string())?;
         let mut result = nonce.to_vec();

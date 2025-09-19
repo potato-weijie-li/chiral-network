@@ -12,6 +12,7 @@ mod keystore;
 mod manager;
 mod market;
 mod storage_node;
+mod crypto;
 
 use dht::{DhtEvent, DhtMetricsSnapshot, DhtService, FileMetadata};
 use ethereum::{
@@ -987,7 +988,7 @@ async fn get_file_metadata(
             let mut online_nodes = 1; // At least this node
             let mut total_replicas = 1;
             let mut file_size = 0u64;
-            let mut created_at = std::time::SystemTime::now()
+            let created_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
