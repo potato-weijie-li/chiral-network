@@ -1,22 +1,4 @@
-// Mock invoke function for build-time compatibility
-let invoke: any;
-try {
-  // Try to import Tauri API for runtime
-  invoke = (await import("@tauri-apps/api/core")).invoke;
-} catch {
-  // Fallback mock for build time
-  invoke = async (command: string, args?: any) => {
-    console.warn(`Mock invoke called: ${command}`, args);
-    if (command === "upload_file_data_to_network") {
-      // Return a mock hash
-      return "mock_hash_" + Date.now();
-    }
-    if (command === "verify_file_storage") {
-      return true;
-    }
-    throw new Error(`Mock invoke: ${command} not implemented`);
-  };
-}
+import { invoke } from "@tauri-apps/api/core";
 
 export interface FileMetadata {
   file_hash: string;
@@ -81,13 +63,6 @@ export class FileService {
    * Download a file from the network by hash
    */
   async downloadFile(hash: string): Promise<Blob> {
-    // Query market for suppliers
-    const suppliers = await this.queryMarket(hash);
-
-    if (suppliers.length === 0) {
-      throw new Error("File not found in network");
-    }
-
     // Download chunks via Tauri backend
     const chunks = await invoke<Uint8Array[]>("download_file_from_network", {
       fileHash: hash,
@@ -103,42 +78,15 @@ export class FileService {
    * Get file metadata and availability information
    */
   async getFileInfo(hash: string): Promise<FileMetadata> {
-    // This would be implemented to query DHT and storage nodes
-    // For now, return mock data based on the hash
-    return {
-      file_hash: hash,
-      file_name: "Unknown",
-      file_size: 0,
-      chunk_count: 0,
-      chunk_size: 256 * 1024,
-      created_at: Date.now(),
-      encryption: {
-        algorithm: "AES-256-GCM",
-        encrypted: true,
-      },
-      availability: {
-        online_nodes: 3,
-        total_replicas: 3,
-        health_score: 1.0,
-      },
-    };
-  }
-
-  /**
-   * Query the market for file suppliers
-   */
-  private async queryMarket(_hash: string): Promise<Supplier[]> {
-    // In a real implementation, this would query the market server using the hash
-    // For now, return mock suppliers
-    return [
-      {
-        id: "node_1",
-        ip: "192.168.1.100",
-        port: 8080,
-        price: 0.001,
-        reputation: 4.5,
-      },
-    ];
+    try {
+      const metadata = await invoke<FileMetadata>("get_file_metadata", {
+        fileHash: hash,
+      });
+      return metadata;
+    } catch (error) {
+      console.error("Failed to get file metadata:", error);
+      throw new Error(`Failed to get file metadata: ${error}`);
+    }
   }
 
   /**
@@ -160,19 +108,48 @@ export class FileService {
   /**
    * Get upload progress for a file
    */
-  async getUploadProgress(_hash: string): Promise<{
+  async getUploadProgress(hash: string): Promise<{
     progress: number;
     status: "uploading" | "verifying" | "completed" | "failed";
     chunks_uploaded: number;
     total_chunks: number;
+    file_size?: number;
+    storage_verified?: boolean;
   }> {
-    // This would be implemented to track real upload progress using the hash
-    // For now, return completed status
-    return {
-      progress: 100,
-      status: "completed",
-      chunks_uploaded: 1,
-      total_chunks: 1,
-    };
+    try {
+      const status = await invoke<any>("get_file_upload_status", {
+        fileHash: hash,
+      });
+      return {
+        progress: status.progress || 0,
+        status: status.status || "failed",
+        chunks_uploaded: status.chunks_uploaded || 0,
+        total_chunks: status.total_chunks || 0,
+        file_size: status.file_size,
+        storage_verified: status.storage_verified,
+      };
+    } catch (error) {
+      console.error("Failed to get upload progress:", error);
+      return {
+        progress: 0,
+        status: "failed",
+        chunks_uploaded: 0,
+        total_chunks: 0,
+      };
+    }
+  }
+
+  /**
+   * List all files stored locally
+   */
+  async listStoredFiles(): Promise<Array<{ hash: string; name: string }>> {
+    try {
+      // This would call a backend command to list stored files
+      // For now, we'll need to implement this in the backend
+      return [];
+    } catch (error) {
+      console.error("Failed to list stored files:", error);
+      return [];
+    }
   }
 }
