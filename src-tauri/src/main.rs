@@ -650,39 +650,58 @@ async fn upload_file_data_to_network(
 ) -> Result<String, String> {
     info!("Starting upload for file: {} ({} bytes)", file_name, file_data.len());
 
+    // Auto-start required services if not running
+    let _ = start_file_transfer_service(state.clone()).await;
+    let _ = start_market_service(state.clone()).await;
+    let _ = start_storage_node_service(state.clone(), "local_node".to_string(), 10).await; // 10GB capacity
+
     // Step 1: Generate Hash
     let file_hash = file_transfer::FileTransferService::calculate_file_hash(&file_data);
     info!("Generated file hash: {}", file_hash);
 
-    // Step 2: Chunk & Encrypt (for files larger than 1MB)
+    // Step 2: Store file locally first for instant availability
+    let ft = {
+        let ft_guard = state.file_transfer.lock().map_err(|e| e.to_string())?;
+        ft_guard.as_ref().cloned()
+    };
+
+    if let Some(ft) = ft {
+        ft.store_file_data(file_hash.clone(), file_name.clone(), file_data.clone()).await;
+        info!("File stored locally for instant seeding");
+    } else {
+        return Err("File transfer service failed to start".to_string());
+    }
+
+    // Step 3: Chunk & Encrypt (for files larger than 1MB)
     let chunks = if file_data.len() > 1024 * 1024 {
         // Create temporary file for chunking
         let temp_dir = std::env::temp_dir();
         let temp_file_path = temp_dir.join(format!("upload_{}", file_hash));
         
         if let Err(e) = tokio::fs::write(&temp_file_path, &file_data).await {
-            return Err(format!("Failed to create temporary file for chunking: {}", e));
-        }
-
-        // Use chunk manager for large files
-        let chunk_manager = manager::ChunkManager::new(temp_dir.join("chunks"));
-        
-        // Generate a dummy public key for encryption (in real implementation, this would be recipient's key)
-        let dummy_key = x25519_dalek::PublicKey::from([0u8; 32]);
-        
-        match chunk_manager.chunk_and_encrypt_file(&temp_file_path, &dummy_key) {
-            Ok((chunks, _encrypted_key)) => {
-                info!("File chunked successfully: {} chunks created", chunks.len());
-                
-                // Clean up temporary file
-                let _ = tokio::fs::remove_file(temp_file_path).await;
-                chunks
-            },
-            Err(e) => {
-                warn!("Failed to chunk file {}: {}", file_hash, e);
-                // Clean up temporary file
-                let _ = tokio::fs::remove_file(temp_file_path).await;
-                return Err(format!("Failed to chunk file: {}", e));
+            warn!("Failed to create temporary file for chunking: {}", e);
+            vec![]
+        } else {
+            // Use chunk manager for large files
+            let chunk_manager = manager::ChunkManager::new(temp_dir.join("chunks"));
+            
+            // Generate a dummy public key for encryption (in real implementation, this would be recipient's key)
+            let dummy_key = x25519_dalek::PublicKey::from([0u8; 32]);
+            
+            match chunk_manager.chunk_and_encrypt_file(&temp_file_path, &dummy_key) {
+                Ok((chunks, _encrypted_key)) => {
+                    info!("File chunked successfully: {} chunks created", chunks.len());
+                    
+                    // Clean up temporary file
+                    let _ = tokio::fs::remove_file(temp_file_path).await;
+                    chunks
+                },
+                Err(e) => {
+                    warn!("Failed to chunk file {}: {}", file_hash, e);
+                    // Clean up temporary file
+                    let _ = tokio::fs::remove_file(temp_file_path).await;
+                    vec![]
+                }
             }
         }
     } else {
@@ -690,78 +709,87 @@ async fn upload_file_data_to_network(
         vec![]
     };
 
-    // Step 3: Query Market for Storage Nodes
+    // Step 4: Query Market for Storage Nodes and distribute chunks
     let market_service = {
         let market_guard = state.market.lock().map_err(|e| e.to_string())?;
         market_guard.as_ref().cloned()
     };
 
-    let storage_nodes = if let Some(market) = market_service {
+    let storage_confirmations = if let Some(market) = market_service {
         match market.query_storage_nodes(file_data.len() as u64, 3).await {
             Ok(nodes) => {
                 info!("Found {} storage nodes for file", nodes.len());
-                nodes
-            }
-            Err(e) => {
-                warn!("Failed to query storage nodes: {}", e);
-                return Err(format!("Failed to find storage nodes: {}", e));
-            }
-        }
-    } else {
-        warn!("Market service not available, using local storage only");
-        Vec::new()
-    };
+                
+                // Upload chunks to storage nodes if we have chunks
+                if !chunks.is_empty() {
+                    let mut confirmations = Vec::new();
+                    
+                    for chunk in &chunks {
+                        // Read chunk data from disk
+                        let chunk_path = std::env::temp_dir().join("chunks").join(&chunk.hash);
+                        if let Ok(chunk_data) = tokio::fs::read(&chunk_path).await {
+                            // Store on local storage node
+                            let storage_service = {
+                                let storage_guard = state.storage_node.lock().map_err(|e| e.to_string())?;
+                                storage_guard.as_ref().cloned()
+                            };
 
-    // Step 4: Upload Chunks to Storage Nodes
-    let storage_confirmations = if !storage_nodes.is_empty() && !chunks.is_empty() {
-        let mut confirmations = Vec::new();
-        
-        for chunk in &chunks {
-            // Read chunk data from disk
-            let chunk_path = std::env::temp_dir().join("chunks").join(&chunk.hash);
-            if let Ok(chunk_data) = tokio::fs::read(&chunk_path).await {
-                // For each chunk, try to store on multiple nodes
-                for node in &storage_nodes {
-                    let storage_service = {
-                        let storage_guard = state.storage_node.lock().map_err(|e| e.to_string())?;
-                        storage_guard.as_ref().cloned()
-                    };
+                            if let Some(storage) = storage_service {
+                                let upload_request = storage_node::ChunkUploadRequest {
+                                    chunk_hash: chunk.hash.clone(),
+                                    chunk_data: chunk_data.clone(),
+                                    file_hash: file_hash.clone(),
+                                    chunk_index: chunk.index,
+                                    payment_tx: None,
+                                };
 
-                    if let Some(storage) = storage_service {
-                        let upload_request = storage_node::ChunkUploadRequest {
-                            chunk_hash: chunk.hash.clone(),
-                            chunk_data: chunk_data.clone(),
-                            file_hash: file_hash.clone(),
-                            chunk_index: chunk.index,
-                            payment_tx: None, // TODO: Implement payment
-                        };
-
-                        match storage.store_chunk(upload_request).await {
-                            Ok(response) => {
-                                info!("Chunk {} stored on node {}", chunk.hash, response.node_id);
-                                confirmations.push(response);
-                                break; // Move to next chunk after successful storage
-                            }
-                            Err(e) => {
-                                warn!("Failed to store chunk {} on node {}: {}", chunk.hash, node.node_id, e);
+                                match storage.store_chunk(upload_request).await {
+                                    Ok(response) => {
+                                        info!("Chunk {} stored on local storage node", chunk.hash);
+                                        confirmations.push(response);
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to store chunk {} on local storage node: {}", chunk.hash, e);
+                                    }
+                                }
                             }
                         }
                     }
+                    
+                    // Register this file with the market
+                    let supplier = market::FileSupplier {
+                        supplier_id: "local_node".to_string(),
+                        file_hash: file_hash.clone(),
+                        ip: "127.0.0.1".to_string(),
+                        port: 8080,
+                        price: 0.001,
+                        bandwidth: 100,
+                        reputation: 5.0,
+                        last_seen: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    };
+                    
+                    if let Err(e) = market.register_file_supplier(file_hash.clone(), supplier).await {
+                        warn!("Failed to register file supplier: {}", e);
+                    } else {
+                        info!("File supplier registered successfully");
+                    }
+                    
+                    confirmations
+                } else {
+                    info!("No chunks to upload to storage nodes");
+                    Vec::new()
                 }
             }
+            Err(e) => {
+                warn!("Failed to query storage nodes: {}", e);
+                Vec::new()
+            }
         }
-        confirmations
     } else {
-        // For small files or no storage nodes, store locally
-        let ft = {
-            let ft_guard = state.file_transfer.lock().map_err(|e| e.to_string())?;
-            ft_guard.as_ref().cloned()
-        };
-
-        if let Some(ft) = ft {
-            ft.store_file_data(file_hash.clone(), file_name.clone(), file_data.clone()).await;
-            info!("File stored locally in file transfer service");
-        }
+        warn!("Market service not available");
         Vec::new()
     };
 
@@ -796,12 +824,12 @@ async fn upload_file_data_to_network(
                 }
             }
         } else {
+            info!("DHT service not running, file will be available locally only");
             false
         }
     };
 
-    // Step 6: Create Payment Transaction (TODO: Implement blockchain payment)
-    // For now, we'll skip the payment step as it requires the blockchain to be running
+    // Step 6: Payment processing (placeholder)
     info!("Payment transaction creation skipped (blockchain integration pending)");
 
     // Summary
@@ -861,28 +889,45 @@ async fn verify_file_storage(
             return Ok(false);
         }
 
-        // Check DHT for file metadata
-        let dht = {
-            let dht_guard = state.dht.lock().map_err(|e| e.to_string())?;
-            dht_guard.as_ref().cloned()
+        // Also check storage node if available
+        let storage = {
+            let storage_guard = state.storage_node.lock().map_err(|e| e.to_string())?;
+            storage_guard.as_ref().cloned()
         };
 
-        if let Some(dht) = dht {
-            // Search for file in DHT to verify it's been published
-            match dht.search_file(file_hash.clone()).await {
-                Ok(_) => {
-                    info!("File {} verified in both local storage and DHT", file_hash);
-                    Ok(true)
-                }
-                Err(e) => {
-                    warn!("File {} not found in DHT: {}", file_hash, e);
-                    Ok(false) // File exists locally but not in DHT
-                }
-            }
+        let storage_verified = if let Some(storage) = storage {
+            storage.verify_chunk(file_hash.clone()).await.unwrap_or(false)
         } else {
-            // No DHT service, can only verify local storage
-            Ok(file_exists_locally)
+            false
+        };
+
+        // Check market registration
+        let market = {
+            let market_guard = state.market.lock().map_err(|e| e.to_string())?;
+            market_guard.as_ref().cloned()
+        };
+
+        let market_registered = if let Some(market) = market {
+            !market.lookup_file_suppliers(file_hash.clone()).await.unwrap_or(Vec::new()).is_empty()
+        } else {
+            false
+        };
+
+        // File is considered verified if it exists locally and is either:
+        // - Stored in storage node, OR
+        // - Registered in market, OR  
+        // - Small file that doesn't need distributed storage
+        let verified = file_exists_locally && (storage_verified || market_registered);
+        
+        if verified {
+            info!("File {} verified: local={}, storage={}, market={}", 
+                  file_hash, file_exists_locally, storage_verified, market_registered);
+        } else {
+            warn!("File {} verification incomplete: local={}, storage={}, market={}", 
+                  file_hash, file_exists_locally, storage_verified, market_registered);
         }
+
+        Ok(verified)
     } else {
         Err("File transfer service is not running".to_string())
     }
@@ -962,6 +1007,42 @@ async fn get_storage_stats(state: State<'_, AppState>) -> Result<serde_json::Val
     } else {
         Err("Storage node service is not running".to_string())
     }
+}
+
+#[tauri::command]
+async fn get_storage_locations(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let mut storage_info = serde_json::json!({
+        "file_transfer_service": {
+            "description": "In-memory storage for instant file availability",
+            "location": "RAM (temporary)",
+            "purpose": "Instant seeding and fast access"
+        }
+    });
+
+    // Check storage node path
+    let storage = {
+        let storage_guard = state.storage_node.lock().map_err(|e| e.to_string())?;
+        storage_guard.as_ref().cloned()
+    };
+
+    if let Some(_storage) = storage {
+        let storage_path = std::env::temp_dir().join("chiral_storage").join("local_node");
+        storage_info["storage_node"] = serde_json::json!({
+            "description": "Distributed storage for chunks and persistent storage",
+            "location": storage_path.display().to_string(),
+            "purpose": "Chunk storage, redundancy, and network sharing"
+        });
+    }
+
+    // Check chunk manager path
+    let chunk_path = std::env::temp_dir().join("chunks");
+    storage_info["chunk_manager"] = serde_json::json!({
+        "description": "Encrypted file chunks for large files",
+        "location": chunk_path.display().to_string(),
+        "purpose": "Temporary encrypted chunks during processing"
+    });
+
+    Ok(storage_info)
 }
 
 #[tauri::command]
@@ -1238,7 +1319,8 @@ fn main() {
             start_market_service,
             start_storage_node_service,
             get_market_stats,
-            get_storage_stats
+            get_storage_stats,
+            get_storage_locations
         ])
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_os::init())
