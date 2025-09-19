@@ -1,6 +1,6 @@
 use aes_gcm::{
     aead::{Aead, OsRng},
-    Aes256Gcm, KeyInit, Nonce,
+    Aes256Gcm, KeyInit, Nonce, AeadCore,
 };
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ pub fn encrypt_aes_key(
 
     // 4. Encrypt the AES key (DEK) with the derived KEK.
     let kek_cipher = Aes256Gcm::new_from_slice(&kek).map_err(|e| e.to_string())?;
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // Generate a random nonce
+    let nonce = Aes256Gcm::generate_nonce(OsRng); // Generate a random nonce
     let encrypted_key = kek_cipher
         .encrypt(&nonce, aes_key_to_encrypt.as_ref())
         .map_err(|e| format!("AES key encryption failed: {}", e))?;

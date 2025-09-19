@@ -52,7 +52,7 @@ pub enum FileTransferEvent {
 pub struct FileTransferService {
     cmd_tx: mpsc::Sender<FileTransferCommand>,
     event_rx: Arc<Mutex<mpsc::Receiver<FileTransferEvent>>>,
-    stored_files: Arc<Mutex<HashMap<String, (String, Vec<u8>)>>>, // hash -> (name, data)
+    pub stored_files: Arc<Mutex<HashMap<String, (String, Vec<u8>)>>>, // hash -> (name, data)
 }
 
 impl FileTransferService {
