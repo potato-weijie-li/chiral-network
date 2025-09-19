@@ -654,7 +654,7 @@ async fn upload_file_data_to_network(
     let _ = start_file_transfer_service(state.clone()).await;
     let _ = start_market_service(state.clone()).await;
     let _ = start_storage_node_service(state.clone(), "local_node".to_string(), 10).await; // 10GB capacity
-    let _ = start_dht_node(state.clone(), "127.0.0.1:4001".to_string()).await; // Auto-start DHT
+    let _ = start_dht_node(state.clone(), 4001, vec![]).await; // Auto-start DHT
 
     // Step 1: Generate Hash
     let file_hash = file_transfer::FileTransferService::calculate_file_hash(&file_data);
