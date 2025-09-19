@@ -7,6 +7,7 @@
   import { get } from 'svelte/store'
   import { showToast } from '$lib/toast'
   import { isDuplicateHash } from '$lib/uploadHelpers.js'
+  import { FileService } from '$lib/services/fileService'
   const tr = (k: string, params?: Record<string, any>) => get(t)(k, params)
 
   let isDragging = false
@@ -58,56 +59,107 @@
   async function addFiles(filesToAdd: File[]) {
     let duplicateCount = 0
     let addedCount = 0
+    let failedCount = 0
+
+    // Ensure file transfer service is running
+    const serviceStarted = await FileService.startFileTransferService();
+    if (!serviceStarted) {
+      showToast(tr('upload.serviceError'), 'error');
+      return;
+    }
 
     for (let i = 0; i < filesToAdd.length; i++) {
       const file = filesToAdd[i];
+      const fileId = `file-${Date.now()}-${i}`;
+      
       try {
-        // Compute SHA-256 hash of file
+        // First compute hash locally to check for duplicates
         const arrayBuffer = await file.arrayBuffer();
         const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
         const hashArray = Array.from(new Uint8Array(hashBuffer));
-        const fileHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        const localHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-        if (isDuplicateHash(get(files), fileHash)) {
+        if (isDuplicateHash(get(files), localHash)) {
           duplicateCount++
           continue;
         }
 
+        // Add file with uploading status
         const newFile = {
-          id: `file-${Date.now()}-${i}`,
+          id: fileId,
           name: file.name,
-          hash: fileHash,
+          hash: 'uploading...',
           size: file.size,
-          status: 'seeding' as const,
-          seeders: 1,
-          leechers: 0,
-          uploadDate: new Date()
-        };
-
-        files.update(f => [...f, newFile]);
-        addedCount++;
-      } catch (error) {
-        console.error('Failed to upload file:', error);
-        const newFile = {
-          id: `file-${Date.now()}-${i}`,
-          name: file.name,
-          hash: `error-${Date.now()}`,
-          size: file.size,
-          status: 'failed' as const,
+          status: 'queued' as const,
+          progress: 0,
           seeders: 0,
           leechers: 0,
           uploadDate: new Date()
         };
+
         files.update(f => [...f, newFile]);
+
+        // Upload file to backend network
+        const uploadResult = await FileService.uploadFile(file);
+
+        if (uploadResult.success && uploadResult.hash) {
+          // Update file with successful upload
+          files.update(f => f.map(item => 
+            item.id === fileId 
+              ? { 
+                  ...item, 
+                  hash: uploadResult.hash!,
+                  status: 'seeding' as const,
+                  progress: 100,
+                  seeders: 1 
+                }
+              : item
+          ));
+          addedCount++;
+        } else {
+          // Update file with failure status
+          files.update(f => f.map(item => 
+            item.id === fileId 
+              ? { 
+                  ...item, 
+                  hash: `error-${Date.now()}`,
+                  status: 'failed' as const,
+                  progress: 0
+                }
+              : item
+          ));
+          failedCount++;
+          console.error('Upload failed:', uploadResult.error);
+        }
+
+      } catch (error) {
+        console.error('Failed to process file:', error);
+        // Update file with failure status
+        files.update(f => f.map(item => 
+          item.id === fileId 
+            ? { 
+                ...item, 
+                hash: `error-${Date.now()}`,
+                status: 'failed' as const,
+                progress: 0
+              }
+            : item
+        ));
+        failedCount++;
       }
     }
 
+    // Show appropriate toast messages
     if (duplicateCount > 0) {
       showToast(tr('upload.duplicateSkipped', { count: duplicateCount }), 'warning')
     }
 
     if (addedCount > 0) {
       showToast(tr('upload.filesAdded', { count: addedCount }), 'success')
+    }
+
+    if (failedCount > 0) {
+      showToast(tr('upload.uploadFailed', { count: failedCount }), 'error')
     }
   }
   

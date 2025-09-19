@@ -609,7 +609,9 @@
     "noFilesShared": "No files shared yet",
     "addFilesHint2": "Add files to start sharing on the network",
     "duplicateSkipped": "{count, plural, one {Already sharing this file. Skipped duplicate.} other {Skipped {count} duplicate files.}}",
-    "filesAdded": "{count, plural, one {Added 1 file to sharing list.} other {Added {count} files to sharing list.}}"
+    "filesAdded": "{count, plural, one {Added 1 file to sharing list.} other {Added {count} files to sharing list.}}",
+    "uploadFailed": "{count, plural, one {Failed to upload 1 file.} other {Failed to upload {count} files.}}",
+    "serviceError": "Failed to start file transfer service"
   },
   "download": {
     "title": "Download Files",
