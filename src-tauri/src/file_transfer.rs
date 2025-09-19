@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::fs;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info};
+use directories::ProjectDirs;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileRequest {
@@ -49,10 +52,94 @@ pub enum FileTransferEvent {
     },
 }
 
+/// File metadata for persistent storage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FileMetadata {
+    hash: String,
+    name: String,
+    size: u64,
+    upload_date: u64, // Unix timestamp
+}
+
+/// Get the storage directory path for the application
+fn get_storage_path() -> PathBuf {
+    if let Some(proj_dirs) = ProjectDirs::from("com", "chiral-network", "chiral-network") {
+        let storage_dir = proj_dirs.data_dir().join("files");
+        if let Err(e) = fs::create_dir_all(&storage_dir) {
+            error!("Failed to create storage directory: {}", e);
+        }
+        storage_dir
+    } else {
+        // Fallback to current directory if project dirs are not available
+        let fallback = PathBuf::from("./chiral_files");
+        if let Err(e) = fs::create_dir_all(&fallback) {
+            error!("Failed to create fallback storage directory: {}", e);
+        }
+        fallback
+    }
+}
+
+/// Get the metadata file path
+fn get_metadata_path() -> PathBuf {
+    get_storage_path().join("metadata.json")
+}
+
+/// Load file metadata from disk
+fn load_file_metadata() -> HashMap<String, FileMetadata> {
+    let metadata_path = get_metadata_path();
+    if metadata_path.exists() {
+        match fs::read_to_string(&metadata_path) {
+            Ok(content) => {
+                match serde_json::from_str::<Vec<FileMetadata>>(&content) {
+                    Ok(metadata_list) => {
+                        let mut metadata_map = HashMap::new();
+                        for metadata in metadata_list {
+                            metadata_map.insert(metadata.hash.clone(), metadata);
+                        }
+                        info!("Loaded {} file metadata entries from disk", metadata_map.len());
+                        metadata_map
+                    }
+                    Err(e) => {
+                        error!("Failed to parse metadata file: {}", e);
+                        HashMap::new()
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to read metadata file: {}", e);
+                HashMap::new()
+            }
+        }
+    } else {
+        info!("No existing metadata file found, starting with empty storage");
+        HashMap::new()
+    }
+}
+
+/// Save file metadata to disk
+fn save_file_metadata(metadata_map: &HashMap<String, FileMetadata>) {
+    let metadata_path = get_metadata_path();
+    let metadata_list: Vec<FileMetadata> = metadata_map.values().cloned().collect();
+    
+    match serde_json::to_string_pretty(&metadata_list) {
+        Ok(content) => {
+            if let Err(e) = fs::write(&metadata_path, content) {
+                error!("Failed to save metadata file: {}", e);
+            } else {
+                info!("Saved {} file metadata entries to disk", metadata_list.len());
+            }
+        }
+        Err(e) => {
+            error!("Failed to serialize metadata: {}", e);
+        }
+    }
+}
+
 pub struct FileTransferService {
     cmd_tx: mpsc::Sender<FileTransferCommand>,
     event_rx: Arc<Mutex<mpsc::Receiver<FileTransferEvent>>>,
     stored_files: Arc<Mutex<HashMap<String, (String, Vec<u8>, u64)>>>, // hash -> (name, data, size)
+    file_metadata: Arc<Mutex<HashMap<String, FileMetadata>>>, // hash -> metadata
 }
 
 impl FileTransferService {
@@ -60,18 +147,46 @@ impl FileTransferService {
         let (cmd_tx, cmd_rx) = mpsc::channel(100);
         let (event_tx, event_rx) = mpsc::channel(100);
         let stored_files = Arc::new(Mutex::new(HashMap::new()));
+        
+        // Load existing file metadata from disk
+        let file_metadata = Arc::new(Mutex::new(load_file_metadata()));
+        
+        // Load existing files from disk into memory
+        {
+            let metadata = file_metadata.lock().await;
+            let mut files = stored_files.lock().await;
+            
+            for (hash, meta) in metadata.iter() {
+                let file_path = get_storage_path().join(&hash);
+                if file_path.exists() {
+                    match fs::read(&file_path) {
+                        Ok(data) => {
+                            files.insert(hash.clone(), (meta.name.clone(), data, meta.size));
+                            info!("Loaded file from disk: {} ({})", meta.name, hash);
+                        }
+                        Err(e) => {
+                            error!("Failed to load file {}: {}", hash, e);
+                        }
+                    }
+                } else {
+                    error!("File not found on disk: {} ({})", meta.name, hash);
+                }
+            }
+        }
 
         // Spawn the file transfer service task
         tokio::spawn(Self::run_file_transfer_service(
             cmd_rx,
             event_tx,
             stored_files.clone(),
+            file_metadata.clone(),
         ));
 
         Ok(FileTransferService {
             cmd_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
             stored_files,
+            file_metadata,
         })
     }
 
@@ -79,13 +194,14 @@ impl FileTransferService {
         mut cmd_rx: mpsc::Receiver<FileTransferCommand>,
         event_tx: mpsc::Sender<FileTransferEvent>,
         stored_files: Arc<Mutex<HashMap<String, (String, Vec<u8>, u64)>>>,
+        file_metadata: Arc<Mutex<HashMap<String, FileMetadata>>>,
     ) {
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
                 FileTransferCommand::UploadFile {
                     file_path,
                     file_name,
-                } => match Self::handle_upload_file(&file_path, &file_name, &stored_files).await {
+                } => match Self::handle_upload_file(&file_path, &file_name, &stored_files, &file_metadata).await {
                     Ok(file_hash) => {
                         let _ = event_tx
                             .send(FileTransferEvent::FileUploaded {
@@ -109,7 +225,7 @@ impl FileTransferService {
                     file_hash,
                     output_path,
                 } => {
-                    match Self::handle_download_file(&file_hash, &output_path, &stored_files).await
+                    match Self::handle_download_file(&file_hash, &output_path, &stored_files, &file_metadata).await
                     {
                         Ok(()) => {
                             let _ = event_tx
@@ -145,6 +261,7 @@ impl FileTransferService {
         file_path: &str,
         file_name: &str,
         stored_files: &Arc<Mutex<HashMap<String, (String, Vec<u8>, u64)>>>,
+        file_metadata: &Arc<Mutex<HashMap<String, FileMetadata>>>,
     ) -> Result<String, String> {
         // Read the file
         let file_data = tokio::fs::read(file_path)
@@ -154,13 +271,37 @@ impl FileTransferService {
         // Calculate file hash
         let file_hash = Self::calculate_file_hash(&file_data);
         let file_size = file_data.len() as u64;
+        let upload_date = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-        // Store the file in memory (in a real implementation, this would be persistent storage)
+        // Save file to persistent storage
+        let storage_path = get_storage_path().join(&file_hash);
+        fs::write(&storage_path, &file_data)
+            .map_err(|e| format!("Failed to save file to disk: {}", e))?;
+
+        // Store the file in memory for quick access
         {
             let mut files = stored_files.lock().await;
             files.insert(file_hash.clone(), (file_name.to_string(), file_data, file_size));
         }
 
+        // Update metadata and save to disk
+        {
+            let mut metadata = file_metadata.lock().await;
+            metadata.insert(file_hash.clone(), FileMetadata {
+                hash: file_hash.clone(),
+                name: file_name.to_string(),
+                size: file_size,
+                upload_date,
+            });
+            
+            // Save metadata to disk
+            save_file_metadata(&metadata);
+        }
+
+        info!("File saved to persistent storage: {} -> {}", file_name, file_hash);
         Ok(file_hash)
     }
 
@@ -168,6 +309,7 @@ impl FileTransferService {
         file_hash: &str,
         output_path: &str,
         stored_files: &Arc<Mutex<HashMap<String, (String, Vec<u8>, u64)>>>,
+        _file_metadata: &Arc<Mutex<HashMap<String, FileMetadata>>>,
     ) -> Result<(), String> {
         // Check if we have the file locally
         let (file_name, file_data, _file_size) = {
@@ -242,7 +384,37 @@ impl FileTransferService {
 
     pub async fn store_file_data(&self, file_hash: String, file_name: String, file_data: Vec<u8>) {
         let file_size = file_data.len() as u64;
-        let mut stored_files = self.stored_files.lock().await;
-        stored_files.insert(file_hash, (file_name, file_data, file_size));
+        let upload_date = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Save file to persistent storage
+        let storage_path = get_storage_path().join(&file_hash);
+        if let Err(e) = fs::write(&storage_path, &file_data) {
+            error!("Failed to save file to disk: {}", e);
+        } else {
+            info!("File saved to persistent storage: {} -> {}", file_name, file_hash);
+        }
+
+        // Store the file in memory for quick access
+        {
+            let mut stored_files = self.stored_files.lock().await;
+            stored_files.insert(file_hash.clone(), (file_name.clone(), file_data, file_size));
+        }
+
+        // Update metadata and save to disk
+        {
+            let mut metadata = self.file_metadata.lock().await;
+            metadata.insert(file_hash.clone(), FileMetadata {
+                hash: file_hash.clone(),
+                name: file_name,
+                size: file_size,
+                upload_date,
+            });
+            
+            // Save metadata to disk
+            save_file_metadata(&metadata);
+        }
     }
 }
