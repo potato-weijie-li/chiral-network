@@ -26,6 +26,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
+use serde_json;
 use sysinfo::{Components, System, MINIMUM_CPU_UPDATE_INTERVAL};
 use systemstat::{Platform, System as SystemStat};
 use tauri::{
@@ -648,10 +649,14 @@ async fn upload_file_data_to_network(
         // Calculate file hash from the data
         let file_hash = file_transfer::FileTransferService::calculate_file_hash(&file_data);
 
-        // Store the file data directly in memory
+        // Store the file data directly in memory (instant seeding starts here)
         let file_size = file_data.len() as u64;
-        ft.store_file_data(file_hash.clone(), file_name.clone(), file_data)
+        ft.store_file_data(file_hash.clone(), file_name.clone(), file_data.clone())
             .await;
+
+        // TODO: Implement proper chunking and encryption here
+        // For now, we store the whole file for instant availability
+        info!("File uploaded and instantly available for seeding: {}", file_hash);
 
         // Also publish to DHT if it's running
         let dht = {
@@ -664,7 +669,7 @@ async fn upload_file_data_to_network(
                 file_hash: file_hash.clone(),
                 file_name: file_name.clone(),
                 file_size: file_size,
-                seeders: vec![],
+                seeders: vec!["local".to_string()], // Mark this node as a seeder
                 created_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
@@ -674,6 +679,8 @@ async fn upload_file_data_to_network(
 
             if let Err(e) = dht.publish_file(metadata).await {
                 warn!("Failed to publish file metadata to DHT: {}", e);
+            } else {
+                info!("File metadata published to DHT successfully");
             }
         }
 
@@ -712,6 +719,94 @@ async fn show_in_folder(path: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[tauri::command]
+async fn verify_file_storage(
+    state: State<'_, AppState>,
+    file_hash: String,
+) -> Result<bool, String> {
+    let ft = {
+        let ft_guard = state.file_transfer.lock().map_err(|e| e.to_string())?;
+        ft_guard.as_ref().cloned()
+    };
+
+    if let Some(ft) = ft {
+        // Check if file exists locally
+        let stored_files = ft.get_stored_files().await?;
+        let file_exists_locally = stored_files.iter().any(|(hash, _)| hash == &file_hash);
+
+        if !file_exists_locally {
+            return Ok(false);
+        }
+
+        // Check DHT for file metadata
+        let dht = {
+            let dht_guard = state.dht.lock().map_err(|e| e.to_string())?;
+            dht_guard.as_ref().cloned()
+        };
+
+        if let Some(dht) = dht {
+            // Search for file in DHT to verify it's been published
+            match dht.search_file(file_hash.clone()).await {
+                Ok(_) => {
+                    info!("File {} verified in both local storage and DHT", file_hash);
+                    Ok(true)
+                }
+                Err(e) => {
+                    warn!("File {} not found in DHT: {}", file_hash, e);
+                    Ok(false) // File exists locally but not in DHT
+                }
+            }
+        } else {
+            // No DHT service, can only verify local storage
+            Ok(file_exists_locally)
+        }
+    } else {
+        Err("File transfer service is not running".to_string())
+    }
+}
+
+#[tauri::command]
+async fn get_file_upload_status(
+    state: State<'_, AppState>,
+    file_hash: String,
+) -> Result<serde_json::Value, String> {
+    let ft = {
+        let ft_guard = state.file_transfer.lock().map_err(|e| e.to_string())?;
+        ft_guard.as_ref().cloned()
+    };
+
+    if let Some(ft) = ft {
+        let stored_files = ft.get_stored_files().await?;
+        let file_info = stored_files.iter().find(|(hash, _)| hash == &file_hash);
+
+        if let Some((hash, name)) = file_info {
+            // File exists, check storage verification
+            let storage_verified = verify_file_storage(state, file_hash.clone()).await?;
+            
+            Ok(serde_json::json!({
+                "progress": 100,
+                "status": if storage_verified { "completed" } else { "verifying" },
+                "chunks_uploaded": 1,
+                "total_chunks": 1,
+                "hash": hash,
+                "name": name,
+                "storage_verified": storage_verified
+            }))
+        } else {
+            Ok(serde_json::json!({
+                "progress": 0,
+                "status": "not_found",
+                "chunks_uploaded": 0,
+                "total_chunks": 0,
+                "storage_verified": false
+            }))
+        }
+    } else {
+        Err("File transfer service is not running".to_string())
+    }
+}
 }
 
 #[tauri::command]
@@ -843,7 +938,9 @@ fn main() {
             download_file_from_network,
             get_file_transfer_events,
             show_in_folder,
-            get_available_storage
+            get_available_storage,
+            verify_file_storage,
+            get_file_upload_status
         ])
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_os::init())

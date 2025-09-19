@@ -7,11 +7,15 @@
   import { get } from 'svelte/store'
   import { showToast } from '$lib/toast'
   import { isDuplicateHash } from '$lib/uploadHelpers.js'
+  import { FileService } from '$lib/services/fileService'
   const tr = (k: string, params?: Record<string, any>) => get(t)(k, params)
 
   let isDragging = false
   let dragCounter = 0
   let fileInput: HTMLInputElement
+  let uploadingFiles: Set<string> = new Set()
+  
+  const fileService = new FileService()
 
   function handleFileSelect(event: Event) {
     const input = event.target as HTMLInputElement
@@ -61,44 +65,77 @@
 
     for (let i = 0; i < filesToAdd.length; i++) {
       const file = filesToAdd[i];
+      const tempId = `file-${Date.now()}-${i}`;
+      
       try {
-        // Compute SHA-256 hash of file
+        // Check for duplicates using browser hash first (for quick UI feedback)
         const arrayBuffer = await file.arrayBuffer();
         const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
         const hashArray = Array.from(new Uint8Array(hashBuffer));
-        const fileHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        const quickHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-        if (isDuplicateHash(get(files), fileHash)) {
+        if (isDuplicateHash(get(files), quickHash)) {
           duplicateCount++
           continue;
         }
 
-        const newFile = {
-          id: `file-${Date.now()}-${i}`,
+        // Add file with uploading status
+        const uploadingFile = {
+          id: tempId,
           name: file.name,
-          hash: fileHash,
+          hash: quickHash, // Temporary hash
           size: file.size,
-          status: 'seeding' as const,
-          seeders: 1,
-          leechers: 0,
-          uploadDate: new Date()
-        };
-
-        files.update(f => [...f, newFile]);
-        addedCount++;
-      } catch (error) {
-        console.error('Failed to upload file:', error);
-        const newFile = {
-          id: `file-${Date.now()}-${i}`,
-          name: file.name,
-          hash: `error-${Date.now()}`,
-          size: file.size,
-          status: 'failed' as const,
+          status: 'uploading' as const,
+          progress: 0,
           seeders: 0,
           leechers: 0,
           uploadDate: new Date()
         };
-        files.update(f => [...f, newFile]);
+
+        files.update(f => [...f, uploadingFile]);
+        uploadingFiles.add(tempId);
+
+        // Upload via Tauri backend
+        const actualHash = await fileService.uploadFile(file);
+        
+        // Verify storage
+        const storageVerified = await fileService.verifyStorage(actualHash);
+        
+        // Update file with actual hash and completed status
+        files.update(f => f.map(existingFile => 
+          existingFile.id === tempId 
+            ? {
+                ...existingFile,
+                hash: actualHash,
+                status: storageVerified ? 'seeding' as const : 'verifying' as const,
+                progress: 100,
+                seeders: 1
+              }
+            : existingFile
+        ));
+
+        uploadingFiles.delete(tempId);
+        addedCount++;
+        
+        showToast(tr('upload.fileUploaded', { name: file.name }), 'success')
+        
+      } catch (error) {
+        console.error('Failed to upload file:', error);
+        
+        // Update file with error status
+        files.update(f => f.map(existingFile => 
+          existingFile.id === tempId 
+            ? {
+                ...existingFile,
+                status: 'failed' as const,
+                progress: 0
+              }
+            : existingFile
+        ));
+        
+        uploadingFiles.delete(tempId);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        showToast(tr('upload.uploadError', { name: file.name, error: errorMessage }), 'error')
       }
     }
 
@@ -188,9 +225,9 @@
       {/if}
       
       <!-- File List -->
-      {#if $files.filter(f => f.status === 'seeding' || f.status === 'uploaded').length > 0}
+      {#if $files.filter(f => f.status === 'seeding' || f.status === 'uploaded' || f.status === 'uploading' || f.status === 'verifying' || f.status === 'failed').length > 0}
         <div class="space-y-2">
-          {#each $files.filter(f => f.status === 'seeding' || f.status === 'uploaded') as file}
+          {#each $files.filter(f => f.status === 'seeding' || f.status === 'uploaded' || f.status === 'uploading' || f.status === 'verifying' || f.status === 'failed') as file}
             <div class="flex flex-wrap items-center justify-between gap-2 p-3 bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">
               <div class="flex items-center gap-3 min-w-0">
                 <FileIcon class="h-4 w-4 text-muted-foreground" />
@@ -212,26 +249,44 @@
                 </div>
               </div>
               <div class="flex items-center gap-2">
-                <Badge variant="secondary" class="text-green-600">
-                  {$t('upload.seeding')}
-                </Badge>
-                <div class="relative inline-block">
-                  <button
-                    on:click={() => handleCopy(file.hash)}
-                    class="p-1 hover:bg-destructive/10 rounded transition-colors"
-                    title={$t('upload.copyHash')}
-                    aria-label="Copy file hash"
-                  >
-                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                  </button>
-                  {#if showCopied && copiedHash === file.hash}
-                    <div class="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-2 py-1 rounded bg-primary text-primary-foreground text-xs shadow z-10 whitespace-nowrap">
-                      {$t('upload.hashCopied')}
-                    </div>
-                  {/if}
-                </div>
+                {#if file.status === 'uploading'}
+                  <Badge variant="secondary" class="text-blue-600">
+                    {$t('upload.uploading')}
+                  </Badge>
+                {:else if file.status === 'verifying'}
+                  <Badge variant="secondary" class="text-yellow-600">
+                    {$t('upload.verifying')}
+                  </Badge>
+                {:else if file.status === 'seeding' || file.status === 'uploaded'}
+                  <Badge variant="secondary" class="text-green-600">
+                    {$t('upload.seeding')}
+                  </Badge>
+                {:else if file.status === 'failed'}
+                  <Badge variant="destructive">
+                    {$t('upload.failed')}
+                  </Badge>
+                {/if}
+                
+                {#if file.status !== 'uploading' && file.status !== 'failed'}
+                  <div class="relative inline-block">
+                    <button
+                      on:click={() => handleCopy(file.hash)}
+                      class="p-1 hover:bg-destructive/10 rounded transition-colors"
+                      title={$t('upload.copyHash')}
+                      aria-label="Copy file hash"
+                    >
+                      <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </button>
+                    {#if showCopied && copiedHash === file.hash}
+                      <div class="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-2 py-1 rounded bg-primary text-primary-foreground text-xs shadow z-10 whitespace-nowrap">
+                        {$t('upload.hashCopied')}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+                
                 <button
                   on:click={() => removeFile(file.id)}
                   class="p-1 hover:bg-destructive/10 rounded transition-colors"

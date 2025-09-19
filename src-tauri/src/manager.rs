@@ -12,7 +12,7 @@ use crate::crypto::{encrypt_aes_key, EncryptedAesKeyBundle};
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct ChunkInfo {
     pub index: u32,
-    pub hash: String
+    pub hash: String,
     pub size: usize,
     pub encrypted_size: usize,
 }
