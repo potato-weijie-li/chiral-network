@@ -7,7 +7,7 @@ use directories::UserDirs;
 
 // Inline chunk manager
 use sha2::{Sha256, Digest};
-use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
+use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit, AeadCore};
 use aes_gcm::aead::{Aead, OsRng};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -500,6 +500,7 @@ pub async fn upload_chunk_to_storage_node(
             error: None,
         })
     } else {
+        let status_code = response.status();
         let error_text = response.text().await
             .unwrap_or_else(|_| "Unknown error".to_string());
         
@@ -507,7 +508,7 @@ pub async fn upload_chunk_to_storage_node(
             chunk_hash,
             uploaded: false,
             storage_node_url: Some(storage_node_url),
-            error: Some(format!("HTTP {}: {}", response.status(), error_text)),
+            error: Some(format!("HTTP {}: {}", status_code, error_text)),
         })
     }
 }

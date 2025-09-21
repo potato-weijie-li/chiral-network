@@ -18,6 +18,7 @@ use ethereum::{
     get_network_difficulty, get_network_hashrate, get_peer_count, get_recent_mined_blocks,
     start_mining, stop_mining, EthAccount, GethProcess, MinedBlock,
 };
+use file_transfer::{FileTransferService, FileTransferEvent};
 use file_handler::{
     chunk_file, upload_chunk_to_storage_node, upload_file_chunks, download_chunk_from_storage_node,
     reassemble_file, get_local_chunks, get_chunk_info, calculate_file_hash, save_temp_file, cleanup_temp_files,
