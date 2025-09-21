@@ -9,6 +9,7 @@ mod file_transfer;
 mod geth_downloader;
 mod headless;
 mod keystore;
+mod file_handler;
 
 use dht::{DhtEvent, DhtMetricsSnapshot, DhtService, FileMetadata};
 use ethereum::{
@@ -17,7 +18,10 @@ use ethereum::{
     get_network_difficulty, get_network_hashrate, get_peer_count, get_recent_mined_blocks,
     start_mining, stop_mining, EthAccount, GethProcess, MinedBlock,
 };
-use file_transfer::{FileTransferEvent, FileTransferService};
+use file_handler::{
+    chunk_file, upload_chunk_to_storage_node, upload_file_chunks, download_chunk_from_storage_node,
+    reassemble_file, get_local_chunks, get_chunk_info, calculate_file_hash, save_temp_file, cleanup_temp_files
+};
 use fs2::available_space;
 use geth_downloader::GethDownloader;
 use keystore::Keystore;
@@ -843,7 +847,17 @@ fn main() {
             download_file_from_network,
             get_file_transfer_events,
             show_in_folder,
-            get_available_storage
+            get_available_storage,
+            chunk_file,
+            upload_chunk_to_storage_node,
+            upload_file_chunks,
+            download_chunk_from_storage_node,
+            reassemble_file,
+            get_local_chunks,
+            get_chunk_info,
+            calculate_file_hash,
+            save_temp_file,
+            cleanup_temp_files
         ])
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_os::init())
