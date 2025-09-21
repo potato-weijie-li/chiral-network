@@ -317,23 +317,76 @@ pub struct ChunkUploadStatus {
 }
 
 fn get_storage_path() -> Result<PathBuf> {
+    // Try to get storage path from settings first
+    match get_storage_path_from_settings() {
+        Ok(path) => Ok(path),
+        Err(_) => {
+            // Fallback to default behavior if settings not available
+            if let Some(user_dirs) = UserDirs::new() {
+                let storage_path = user_dirs.document_dir()
+                    .unwrap_or_else(|| user_dirs.home_dir())
+                    .join("ChiralNetwork")
+                    .join("storage");
+                
+                fs::create_dir_all(&storage_path)
+                    .with_context(|| format!("Failed to create storage directory: {}", storage_path.display()))?;
+                
+                Ok(storage_path)
+            } else {
+                // Fallback to current directory
+                let storage_path = PathBuf::from("./chiral_storage");
+                fs::create_dir_all(&storage_path)
+                    .context("Failed to create fallback storage directory")?;
+                Ok(storage_path)
+            }
+        }
+    }
+}
+
+fn get_storage_path_from_settings() -> Result<PathBuf> {
+    // Read settings from Tauri's app data directory or localStorage equivalent
+    // For now, use the default path from settings until we can access localStorage from Rust
+    // This matches the default in Settings.svelte: storagePath: "~/ChiralNetwork/Storage"
+    
     if let Some(user_dirs) = UserDirs::new() {
-        let storage_path = user_dirs.document_dir()
-            .unwrap_or_else(|| user_dirs.home_dir())
-            .join("ChiralNetwork")
-            .join("storage");
+        let home_dir = user_dirs.home_dir();
+        let storage_path = home_dir.join("ChiralNetwork").join("Storage");
         
         fs::create_dir_all(&storage_path)
             .with_context(|| format!("Failed to create storage directory: {}", storage_path.display()))?;
         
         Ok(storage_path)
     } else {
-        // Fallback to current directory
-        let storage_path = PathBuf::from("./chiral_storage");
-        fs::create_dir_all(&storage_path)
-            .context("Failed to create fallback storage directory")?;
-        Ok(storage_path)
+        Err(anyhow::anyhow!("Could not determine home directory"))
     }
+}
+
+#[command]
+pub async fn get_storage_path_setting() -> Result<String, String> {
+    match get_storage_path() {
+        Ok(path) => Ok(path.to_string_lossy().to_string()),
+        Err(e) => Err(format!("Failed to get storage path: {}", e)),
+    }
+}
+
+#[command]
+pub async fn set_storage_path_setting(new_path: String) -> Result<String, String> {
+    let path_buf = PathBuf::from(&new_path);
+    
+    // Validate that the path is accessible
+    if let Some(parent) = path_buf.parent() {
+        if !parent.exists() {
+            return Err(format!("Parent directory does not exist: {}", parent.display()));
+        }
+    }
+    
+    // Try to create the directory
+    fs::create_dir_all(&path_buf)
+        .map_err(|e| format!("Failed to create storage directory: {}", e))?;
+    
+    // TODO: Save this to persistent settings storage
+    // For now, just validate the path
+    Ok(path_buf.to_string_lossy().to_string())
 }
 
 fn generate_default_encryption_key() -> [u8; 32] {

@@ -133,7 +133,14 @@
       });
 
       if (typeof result === "string") {
-        settings.storagePath = result.replace(home, "~");
+        const newPath = result.replace(home, "~");
+        settings.storagePath = newPath;
+        // Also update the backend storage path
+        try {
+          await invoke("set_storage_path_setting", { newPath: result });
+        } catch (error) {
+          console.warn("Failed to update backend storage path:", error);
+        }
       }
     } catch {
       // Fallback for browser environment
@@ -155,6 +162,12 @@
         );
         if (newPath) {
           settings.storagePath = newPath;
+          // Try to update backend as well
+          try {
+            await invoke("set_storage_path_setting", { newPath });
+          } catch (error) {
+            console.warn("Failed to update backend storage path:", error);
+          }
         }
       }
     }

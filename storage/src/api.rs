@@ -171,7 +171,7 @@ async fn handle_store_chunk(
 async fn handle_retrieve_chunk(
     chunk_hash: String,
     storage_path: PathBuf,
-) -> Result<impl Reply, Rejection> {
+) -> Result<Box<dyn Reply>, Rejection> {
     // Validate hash format (64 hex characters for SHA-256)
     if chunk_hash.len() != 64 || !chunk_hash.chars().all(|c| c.is_ascii_hexdigit()) {
         let error_response = ErrorResponse {
@@ -179,29 +179,31 @@ async fn handle_retrieve_chunk(
             code: 400,
         };
         
-        return Ok(warp::reply::with_status(
+        return Ok(Box::new(warp::reply::with_status(
             warp::reply::json(&error_response),
             StatusCode::BAD_REQUEST,
-        ));
+        )));
     }
 
     match load_chunk_data(&storage_path, &chunk_hash).await {
         Ok(chunk_data) => {
             // Return the raw chunk data with appropriate headers
-            Ok(warp::reply::with_header(
+            Ok(Box::new(warp::reply::with_header(
                 chunk_data,
                 "content-type",
                 "application/octet-stream",
-            ).into_response())
+            )))
         }
         Err(_) => {
-            Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: "Chunk not found".to_string(),
-                    code: 404,
-                }),
+            let error_response = ErrorResponse {
+                error: "Chunk not found".to_string(),
+                code: 404,
+            };
+            
+            Ok(Box::new(warp::reply::with_status(
+                warp::reply::json(&error_response),
                 StatusCode::NOT_FOUND,
-            ).into_response())
+            )))
         }
     }
 }

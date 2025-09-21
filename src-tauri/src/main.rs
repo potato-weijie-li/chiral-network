@@ -20,7 +20,8 @@ use ethereum::{
 };
 use file_handler::{
     chunk_file, upload_chunk_to_storage_node, upload_file_chunks, download_chunk_from_storage_node,
-    reassemble_file, get_local_chunks, get_chunk_info, calculate_file_hash, save_temp_file, cleanup_temp_files
+    reassemble_file, get_local_chunks, get_chunk_info, calculate_file_hash, save_temp_file, cleanup_temp_files,
+    get_storage_path_setting, set_storage_path_setting
 };
 use fs2::available_space;
 use geth_downloader::GethDownloader;
@@ -857,7 +858,9 @@ fn main() {
             get_chunk_info,
             calculate_file_hash,
             save_temp_file,
-            cleanup_temp_files
+            cleanup_temp_files,
+            get_storage_path_setting,
+            set_storage_path_setting
         ])
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_os::init())

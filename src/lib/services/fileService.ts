@@ -25,12 +25,45 @@ export interface ChunkUploadStatus {
 
 export class FileService {
   private storageNodeUrl = "http://localhost:8080"; // Default storage node URL
+  private cachedStoragePath: string | null = null;
 
   /**
    * Sets the storage node URL for chunk uploads
    */
   setStorageNodeUrl(url: string) {
     this.storageNodeUrl = url;
+  }
+
+  /**
+   * Gets the current storage path from settings
+   */
+  async getStoragePath(): Promise<string> {
+    if (this.cachedStoragePath) {
+      return this.cachedStoragePath;
+    }
+
+    try {
+      const path = await invoke<string>("get_storage_path_setting");
+      this.cachedStoragePath = path;
+      return path;
+    } catch (error) {
+      console.warn("Failed to get storage path from settings:", error);
+      return "~/ChiralNetwork/Storage"; // Fallback to default
+    }
+  }
+
+  /**
+   * Sets a new storage path in settings
+   */
+  async setStoragePath(newPath: string): Promise<boolean> {
+    try {
+      await invoke<string>("set_storage_path_setting", { newPath });
+      this.cachedStoragePath = newPath; // Update cache
+      return true;
+    } catch (error) {
+      console.error("Failed to set storage path:", error);
+      return false;
+    }
   }
 
   /**
