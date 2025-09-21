@@ -1,6 +1,5 @@
 use warp::{Filter, Reply, Rejection};
 use warp::hyper::StatusCode;
-use warp::reply::Response;
 use std::path::PathBuf;
 use std::fs;
 use std::convert::Infallible;
@@ -49,8 +48,7 @@ impl StorageNodeServer {
             .or(self.retrieve_chunk(storage_path.clone()))
             .or(self.list_chunks(storage_path.clone()))
             .or(self.health_check())
-            .with(cors)
-            .recover(handle_rejection);
+            .with(cors);
 
         routes
     }
@@ -176,13 +174,15 @@ async fn handle_retrieve_chunk(
 ) -> Result<impl Reply, Rejection> {
     // Validate hash format (64 hex characters for SHA-256)
     if chunk_hash.len() != 64 || !chunk_hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        let error_response = ErrorResponse {
+            error: "Invalid chunk hash format".to_string(),
+            code: 400,
+        };
+        
         return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Invalid chunk hash format".to_string(),
-                code: 400,
-            }),
+            warp::reply::json(&error_response),
             StatusCode::BAD_REQUEST,
-        ).into_response());
+        ));
     }
 
     match load_chunk_data(&storage_path, &chunk_hash).await {
@@ -207,7 +207,7 @@ async fn handle_retrieve_chunk(
 }
 
 /// Handles listing all chunks (for debugging)
-async fn handle_list_chunks(storage_path: PathBuf) -> Result<impl Reply, Rejection> {
+async fn handle_list_chunks(storage_path: PathBuf) -> Result<Box<dyn Reply>, Rejection> {
     match list_stored_chunks(&storage_path).await {
         Ok(chunks) => {
             #[derive(Serialize)]
@@ -221,17 +221,20 @@ async fn handle_list_chunks(storage_path: PathBuf) -> Result<impl Reply, Rejecti
                 chunks,
             };
 
-            Ok(warp::reply::json(&response))
+            Ok(Box::new(warp::reply::json(&response)))
         }
         Err(e) => {
             eprintln!("Failed to list chunks: {}", e);
-            Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: format!("Failed to list chunks: {}", e),
-                    code: 500,
-                }),
+            
+            let error_response = ErrorResponse {
+                error: format!("Failed to list chunks: {}", e),
+                code: 500,
+            };
+            
+            Ok(Box::new(warp::reply::with_status(
+                warp::reply::json(&error_response),
                 StatusCode::INTERNAL_SERVER_ERROR,
-            ))
+            )))
         }
     }
 }
@@ -340,7 +343,6 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use tokio_test;
 
     #[tokio::test]
     async fn test_store_and_retrieve_chunk() {

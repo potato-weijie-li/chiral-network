@@ -1,8 +1,8 @@
 use sha2::{Sha256, Digest};
 use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
-use aes_gcm::aead::{Aead, OsRng};
+use aes_gcm::aead::{Aead, AeadCore, OsRng};
 use std::fs::{File, self};
-use std::io::{Read, Write, Error as IoError};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Serialize, Deserialize};
