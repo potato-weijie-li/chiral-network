@@ -339,7 +339,17 @@
 
       // Mock file database with predefined hashes for testing
       // TODO: Replace with actual DHT search results
-      const mockFileDatabase = {
+      const mockFileDatabase: Record<string, {
+        fileName: string
+        fileSize: number
+        peers: Array<{
+          id: string
+          nickname: string
+          reputation: number
+          status: string
+          connection: string
+        }>
+      }> = {
         // Existing files (already in downloads list)
         'QmZ4tDuvesekqMF': {
           fileName: 'Video.mp4',
@@ -406,7 +416,20 @@
       // Check if the searched hash exists in our mock database
       const fileData = mockFileDatabase[searchHash]
 
-      let mockResults = []
+      let mockResults: Array<{
+        fileHash: string
+        fileName: string
+        fileSize: number
+        seeders: number
+        leechers: number
+        peers: Array<{
+          id: string
+          nickname: string
+          reputation: number
+          status: string
+          connection: string
+        }>
+      }> = []
       if (fileData) {
         // File found - create mock result
         const seeders = fileData.peers.length
@@ -502,90 +525,6 @@
     searchHash = ''
   }
 
-  // Enhanced startDownload function with real P2P download (kept for backward compatibility)
-  async function startDownload() {
-    if (!searchHash) {
-      showNotification(tr('download.notifications.enterHash'), 'warning')
-      return
-    }
-    
-    // Check for ALL duplicates (including uploaded files)
-    const allFiles = [...$files, ...$downloadQueue]
-    const existingFile = allFiles.find(f => f.hash === searchHash)
-
-    if (existingFile) {
-      // Handle different scenarios
-      if (existingFile.status === 'seeding' || existingFile.status === 'uploaded') {
-        // User is trying to download a file they're already sharing
-        // Show warning but proceed anyway
-        showNotification('Downloading file that you are already sharing', 'warning', 3000);
-        
-      } else {
-        // File is already in download queue/completed/etc.
-        showNotification('File is already in your download list', 'warning')
-        return
-      }
-    }
-    
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      
-      // Step 1: Show search start notification
-      showNotification(tr('download.notifications.searching'), 'info', 2000)
-      
-      // Step 2: Start file transfer service if not already running
-      try {
-        await invoke('start_file_transfer_service');
-      } catch (e) {
-        console.log('File transfer service already running or error:', e);
-      }
-      
-      // Step 3: Search for file in DHT
-      try {
-        await invoke('search_file_metadata', { fileHash: searchHash });
-        // Wait a moment for DHT search to complete
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      } catch (e) {
-        console.log('DHT search failed:', e);
-      }
-      
-      // Step 4: Skip validation for now - let download fail naturally
-      // This avoids Tauri initialization issues
-      // The download will fail later in simulateDownloadProgress if needed
-      
-      // Step 5: Create new download item and add to queue
-      const newFile = {
-        id: `download-${Date.now()}`,
-        name: 'File_' + searchHash.substring(0, 8) + '.dat',
-        hash: searchHash,
-        size: 0, // Will be updated when we get file info
-        price: 0, // No price in this implementation
-        status: 'queued' as const,
-        priority: 'normal' as const
-      }
-      
-      downloadQueue.update(q => [...q, newFile])
-      
-      // Step 6: Show download start notification
-      showNotification(tr('download.notifications.addedToQueue'), 'success')
-      
-      if (autoStartQueue) {
-        processQueue()
-        // Don't show "automatically started" message immediately
-        // It will be shown in simulateDownloadProgress if download actually starts
-      }
-      
-      // Clear input
-      searchHash = ''
-      
-    } catch (error) {
-      // Error handling
-      console.error('Search download failed:', error)
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-      showNotification(tr('download.notifications.searchFailed', { values: { error: errorMessage } }), 'error', 6000)
-    }
-  }
-
   // Function to clear search
 function clearSearch() {
   searchHash = ''
@@ -655,7 +594,8 @@ function clearSearch() {
 
     // Proceed directly to file dialog
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
+      // TODO: Add actual file download using invoke() from Tauri backend
+      // const { invoke } = await import('@tauri-apps/api/core');
       const { save } = await import('@tauri-apps/plugin-dialog');
       
       // Show file save dialog

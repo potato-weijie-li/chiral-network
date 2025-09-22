@@ -12,6 +12,10 @@
   export let value: string = '';
   export let id: string = '';
   export let disabled: boolean = false;
+  
+  // Allow custom CSS classes
+  let className = '';
+  export { className as class };
 
   const dispatch = createEventDispatcher<{ change: { value: string } }>();
   let open = false;
@@ -31,7 +35,7 @@
   onDestroy(() => document.removeEventListener("click", handleClickOutside));
 </script>
 
-<div class="relative mt-2" bind:this={container}>
+<div class="relative mt-2 {className}" bind:this={container}>
   <button
     type="button"
     id={id}
