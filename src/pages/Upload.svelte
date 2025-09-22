@@ -161,30 +161,74 @@
 
     for (let i = 0; i < filesToAdd.length; i++) {
       const file = filesToAdd[i];
+      
+      // Create initial file entry with uploading status
+      const tempFile = {
+        id: `file-${Date.now()}-${i}`,
+        name: file.name,
+        hash: 'uploading...',
+        size: file.size,
+        status: 'uploading' as const,
+        progress: 0,
+        seeders: 0,
+        leechers: 0,
+        uploadDate: new Date()
+      };
+
+      files.update(f => [...f, tempFile]);
+
       try {
-        // Mock upload for demo purposes (backend not available)
-        const fileHash = `mock-hash-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        // Initialize services if not already done
+        try {
+          await fileService.initializeServices();
+        } catch (e) {
+          console.log('Services already initialized or error:', e);
+        }
+
+        // Show progress
+        files.update(f => f.map(existing => 
+          existing.id === tempFile.id 
+            ? { ...existing, progress: 50 }
+            : existing
+        ));
+
+        // Upload file using the actual file service
+        const fileHash = await fileService.uploadFile(file);
 
         if (isDuplicateHash(get(files), fileHash)) {
+          // Remove the temporary file and count as duplicate
+          files.update(f => f.filter(existing => existing.id !== tempFile.id));
           duplicateCount++
           continue;
         }
 
-        const newFile = {
-          id: `file-${Date.now()}-${i}`,
-          name: file.name,
+        // Update with final information
+        const finalFile = {
+          ...tempFile,
           hash: fileHash,
-          size: file.size,
           status: 'seeding' as const,
-          seeders: Math.floor(Math.random() * 10) + 1,
-          leechers: Math.floor(Math.random() * 5),
-          uploadDate: new Date()
+          progress: 100,
+          seeders: 1, // We're seeding it now
+          leechers: 0, // No leechers yet
         };
 
-        files.update(f => [...f, newFile]);
+        files.update(f => f.map(existing => 
+          existing.id === tempFile.id 
+            ? finalFile
+            : existing
+        ));
+        
         addedCount++;
       } catch (error) {
         console.error(`Failed to upload file "${file.name}":`, error);
+        
+        // Update file status to failed
+        files.update(f => f.map(existing => 
+          existing.id === tempFile.id 
+            ? { ...existing, status: 'failed' as const, progress: 0 }
+            : existing
+        ));
+        
         showToast(tr('upload.fileFailed', { values: { name: file.name, error: String(error) } }), 'error');
       }
     }
@@ -271,7 +315,7 @@
         on:change={handleFileSelect}
         class="hidden"
       />
-      {#if $files.filter(f => f.status === 'seeding' || f.status === 'uploaded').length === 0}
+      {#if $files.filter(f => f.status === 'seeding' || f.status === 'uploaded' || f.status === 'uploading').length === 0}
         <div class="text-center py-12 border-2 border-dashed rounded-xl transition-all duration-300 relative overflow-hidden {isDragging ? 'border-primary bg-gradient-to-br from-primary/20 via-primary/10 to-primary/5 scale-105 shadow-2xl' : 'border-muted-foreground/25 bg-gradient-to-br from-muted/5 to-muted/10 hover:border-muted-foreground/40 hover:bg-muted/20'}">
           
           <!-- Animated background when dragging -->
@@ -326,8 +370,8 @@
           <div>
             <h2 class="text-lg font-semibold">{$t('upload.sharedFiles')}</h2>
             <p class="text-sm text-muted-foreground mt-1">
-              {$files.filter(f => f.status === 'seeding' || f.status === 'uploaded').length} {$t('upload.files')} •
-              {formatFileSize($files.filter(f => f.status === 'seeding' || f.status === 'uploaded').reduce((sum, f) => sum + f.size, 0))} {$t('upload.total')}
+              {$files.filter(f => f.status === 'seeding' || f.status === 'uploaded' || f.status === 'uploading').length} {$t('upload.files')} •
+              {formatFileSize($files.filter(f => f.status === 'seeding' || f.status === 'uploaded' || f.status === 'uploading').reduce((sum, f) => sum + f.size, 0))} {$t('upload.total')}
             </p>
             <p class="text-xs text-muted-foreground mt-1">{$t('upload.tip')}</p>
           </div>
@@ -341,9 +385,9 @@
       {/if}
       
       <!-- File List -->
-      {#if $files.filter(f => f.status === 'seeding' || f.status === 'uploaded').length > 0}
+      {#if $files.filter(f => f.status === 'seeding' || f.status === 'uploaded' || f.status === 'uploading').length > 0}
         <div class="space-y-3">
-          {#each $files.filter(f => f.status === 'seeding' || f.status === 'uploaded') as file}
+          {#each $files.filter(f => f.status === 'seeding' || f.status === 'uploaded' || f.status === 'uploading') as file}
             <div class="group relative overflow-hidden bg-gradient-to-r from-card to-card/80 border border-border/50 rounded-xl p-4 hover:shadow-lg hover:border-border transition-all duration-300 hover:scale-[1.01]">
               <!-- Background gradient effect -->
               <div class="absolute inset-0 bg-gradient-to-r from-primary/5 via-transparent to-secondary/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
@@ -362,15 +406,40 @@
                     <div class="flex items-center gap-2">
                       <p class="text-sm font-semibold truncate text-foreground">{file.name}</p>
                       <div class="flex items-center gap-1">
-                        <div class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
-                        <span class="text-xs text-green-600 font-medium">Active</span>
+                        {#if file.status === 'uploading'}
+                          <div class="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse"></div>
+                          <span class="text-xs text-blue-600 font-medium">Uploading...</span>
+                        {:else if file.status === 'failed'}
+                          <div class="w-1.5 h-1.5 bg-red-500 rounded-full"></div>
+                          <span class="text-xs text-red-600 font-medium">Failed</span>
+                        {:else}
+                          <div class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
+                          <span class="text-xs text-green-600 font-medium">Active</span>
+                        {/if}
                       </div>
                     </div>
+                    
+                    {#if file.status === 'uploading' && file.progress !== undefined}
+                      <!-- Upload progress bar -->
+                      <div class="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                        <div 
+                          class="bg-blue-500 h-1.5 rounded-full transition-all duration-300 ease-out"
+                          style="width: {file.progress}%"
+                        ></div>
+                      </div>
+                      <div class="text-xs text-blue-600 font-medium">
+                        {file.progress}% uploaded
+                      </div>
+                    {/if}
                     
                     <div class="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                       <div class="flex items-center gap-1">
                         <span class="opacity-60">Hash:</span>
-                        <code class="bg-muted/50 px-1.5 py-0.5 rounded text-xs font-mono">{file.hash.slice(0, 8)}...{file.hash.slice(-6)}</code>
+                        {#if file.status === 'uploading'}
+                          <code class="bg-muted/50 px-1.5 py-0.5 rounded text-xs font-mono text-blue-600">Generating...</code>
+                        {:else}
+                          <code class="bg-muted/50 px-1.5 py-0.5 rounded text-xs font-mono">{file.hash.slice(0, 8)}...{file.hash.slice(-6)}</code>
+                        {/if}
                       </div>
                       <span>•</span>
                       <span class="font-medium">{formatFileSize(file.size)}</span>

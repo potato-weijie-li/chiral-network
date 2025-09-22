@@ -13,7 +13,8 @@ export interface FileItem {
     | "uploaded"
     | "queued"
     | "seeding"
-    | "canceled";
+    | "canceled"
+    | "uploading";
   progress?: number;
   uploadDate?: Date;
   owner?: string;

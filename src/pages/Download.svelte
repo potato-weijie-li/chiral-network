@@ -9,6 +9,7 @@
   import { files, downloadQueue } from '$lib/stores'
   import { t } from 'svelte-i18n'
   import { get } from 'svelte/store'
+  import { fileService } from '$lib/services/fileService'
   const tr = (k: string, params?: Record<string, any>) => get(t)(k, params)
   
   let searchHash = ''  // For downloading new files
@@ -227,7 +228,8 @@
       'failed': 4,
       'canceled': 5,
       'uploaded': 6,
-      'seeding': 7
+      'seeding': 7,
+      'uploading': 8
     }
 
 
@@ -621,32 +623,56 @@ function clearSearch() {
       // Show "automatically started" message now that download is proceeding
       showNotification(tr('download.notifications.autostart'), 'info');
       
-      // Start the actual download
+      // Initialize services if needed
+      try {
+        await fileService.initializeServices();
+      } catch (e) {
+        console.log('Services already initialized or error:', e);
+      }
+      
+      // Set initial progress
       files.update(f => f.map(file => 
         file.id === fileId ? { ...file, progress: 10 } : file
       ));
       
-      // Simulate progress while downloading - complete when progress reaches 100%
-      const progressInterval = setInterval(() => {
-        files.update(f => f.map(file => {
-          if (file.id === fileId && file.status === 'downloading') {
-            const currentProgress = file.progress || 10;
-            const newProgress = Math.min(100, currentProgress + Math.random() * 8 + 2); // 2-10% increment
+      try {
+        // Attempt to download the actual file using the file service
+        const actualOutputPath = await fileService.downloadFile(fileToDownload.hash, fileToDownload.name);
+        
+        // Download completed successfully
+        activeSimulations.delete(fileId);
+        showNotification(`Download completed: ${fileToDownload.name} saved to ${actualOutputPath}`, 'success');
+        
+        files.update(f => f.map(file => 
+          file.id === fileId 
+            ? { ...file, progress: 100, status: 'completed', downloadPath: actualOutputPath }
+            : file
+        ));
+        
+      } catch (downloadError) {
+        console.log('Backend download failed, falling back to simulation:', downloadError);
+        
+        // Fall back to simulated download if backend is not available
+        const progressInterval = setInterval(() => {
+          files.update(f => f.map(file => {
+            if (file.id === fileId && file.status === 'downloading') {
+              const currentProgress = file.progress || 10;
+              const newProgress = Math.min(100, currentProgress + Math.random() * 8 + 2); // 2-10% increment
 
-            // Check if download just completed
-            if (newProgress >= 100) {
-              // Complete the download
-              clearInterval(progressInterval);
-              activeSimulations.delete(fileId);
-              showNotification(`Download completed: ${fileToDownload.name} saved to ${outputPath}`, 'success');
+              // Check if download just completed
+              if (newProgress >= 100) {
+                // Complete the download
+                clearInterval(progressInterval);
+                activeSimulations.delete(fileId);
+                showNotification(`Download simulated: ${fileToDownload.name} saved to ${outputPath}`, 'success');
 
-              return { ...file, progress: 100, status: 'completed', downloadPath: outputPath };
+                return { ...file, progress: 100, status: 'completed', downloadPath: outputPath };
+              }
+
+              return { ...file, progress: newProgress };
             }
-
-            return { ...file, progress: newProgress };
-          }
-          return file;
-        }));
+            return file;
+          }));
 
         // Check if download was cancelled (cleanup if needed)
         const currentFile = $files.find(f => f.id === fileId);
@@ -655,6 +681,7 @@ function clearSearch() {
           activeSimulations.delete(fileId);
         }
       }, 500);
+      }
       
     } catch (error) {
       // Download failed
@@ -681,8 +708,7 @@ function clearSearch() {
     const file = $files.find(f => f.id === fileId);
     if (file && file.downloadPath) {
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('show_in_folder', { path: file.downloadPath });
+        await fileService.showInFolder(file.downloadPath);
       } catch (error) {
         console.error('Failed to show file in folder:', error);
         showNotification('Failed to open file location', 'error');
