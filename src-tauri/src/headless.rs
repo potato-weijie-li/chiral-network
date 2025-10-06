@@ -1,4 +1,109 @@
 // Headless mode for running as a bootstrap node on servers
+//
+// This is a wrapper around chiral_node::headless that adds the
+// --headless flag support for the Tauri application.
+
+use clap::Parser;
+
+pub use chiral_node::headless::run_headless;
+
+#[derive(Parser, Debug)]
+#[command(name = "chiral-network")]
+#[command(about = "Chiral Network - P2P File Sharing", long_about = None)]
+pub struct CliArgs {
+    /// Run in headless mode (no GUI)
+    #[arg(long)]
+    pub headless: bool,
+
+    /// DHT port to listen on
+    #[arg(long, default_value = "4001")]
+    pub dht_port: u16,
+
+    /// Bootstrap nodes to connect to (can be specified multiple times)
+    #[arg(long)]
+    pub bootstrap: Vec<String>,
+
+    /// Enable geth node
+    #[arg(long)]
+    pub enable_geth: bool,
+
+    /// Geth data directory
+    #[arg(long, default_value = "./bin/geth-data")]
+    pub geth_data_dir: String,
+
+    /// Miner address for geth
+    #[arg(long)]
+    pub miner_address: Option<String>,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long, default_value = "info")]
+    pub log_level: String,
+
+    /// Generate multiaddr for this node (shows the address others can connect to)
+    #[arg(long)]
+    pub show_multiaddr: bool,
+
+    // Generate consistent peerid
+    #[arg(long)]
+    pub secret: Option<String>,
+
+    // Runs in bootstrap mode
+    #[arg(long)]
+    pub is_bootstrap: bool,
+
+    /// Disable AutoNAT reachability probes
+    #[arg(long)]
+    pub disable_autonat: bool,
+
+    /// Interval in seconds between AutoNAT probes
+    #[arg(long, default_value = "30")]
+    pub autonat_probe_interval: u64,
+
+    /// Additional AutoNAT servers to dial (multiaddr form)
+    #[arg(long)]
+    pub autonat_server: Vec<String>,
+
+    /// Print reachability snapshot at startup (and periodically)
+    #[arg(long)]
+    pub show_reachability: bool,
+
+    /// Print DCUtR hole-punching metrics at startup
+    #[arg(long)]
+    pub show_dcutr: bool,
+
+    // SOCKS5 Proxy address (e.g., 127.0.0.1:9050 for Tor or a private VPN SOCKS endpoint)
+    #[arg(long)]
+    pub socks5_proxy: Option<String>,
+
+    /// Print local download metrics snapshot at startup
+    #[arg(long)]
+    pub show_downloads: bool,
+}
+
+// Convert from Tauri CliArgs to Node CliArgs
+impl From<CliArgs> for chiral_node::headless::CliArgs {
+    fn from(args: CliArgs) -> Self {
+        chiral_node::headless::CliArgs {
+            dht_port: args.dht_port,
+            bootstrap: args.bootstrap,
+            enable_geth: args.enable_geth,
+            geth_data_dir: args.geth_data_dir,
+            miner_address: args.miner_address,
+            log_level: args.log_level,
+            show_multiaddr: args.show_multiaddr,
+            secret: args.secret,
+            is_bootstrap: args.is_bootstrap,
+            disable_autonat: args.disable_autonat,
+            autonat_probe_interval: args.autonat_probe_interval,
+            autonat_server: args.autonat_server,
+            show_reachability: args.show_reachability,
+            show_dcutr: args.show_dcutr,
+            socks5_proxy: args.socks5_proxy,
+            show_downloads: args.show_downloads,
+        }
+    }
+}
+
 use crate::dht::{DhtMetricsSnapshot, DhtService, FileMetadata};
 use crate::ethereum::GethProcess;
 use crate::file_transfer::FileTransferService;

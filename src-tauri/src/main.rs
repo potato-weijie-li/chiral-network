@@ -7,9 +7,11 @@ pub mod commands;
 
 // Import core modules from chiral-node for code reuse
 use chiral_node::{analytics, dht, encryption, ethereum, file_transfer, geth_downloader, 
-    headless, keystore, manager, multi_source_download, net, peer_selection, pool, webrtc_service};
+    keystore, manager, multi_source_download, net, peer_selection, webrtc_service};
 
+mod headless;
 mod two_fa;
+mod pool_commands;
 use std::sync::Mutex as StdMutex;
 
 use crate::commands::proxy::{
@@ -3089,8 +3091,9 @@ fn main() {
         // Create a tokio runtime for async operations
         let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
 
-        // Run the headless mode
-        if let Err(e) = runtime.block_on(headless::run_headless(args)) {
+        // Convert to node CliArgs and run headless mode
+        let node_args = chiral_node::headless::CliArgs::from(args);
+        if let Err(e) = runtime.block_on(headless::run_headless(node_args)) {
             eprintln!("Error in headless mode: {}", e);
             std::process::exit(1);
         }
@@ -3140,13 +3143,13 @@ fn main() {
             save_account_to_keystore,
             load_account_from_keystore,
             list_keystore_accounts,
-            pool::discover_mining_pools,
-            pool::create_mining_pool,
-            pool::join_mining_pool,
-            pool::leave_mining_pool,
-            pool::get_current_pool_info,
-            pool::get_pool_stats,
-            pool::update_pool_discovery,
+            pool_commands::discover_mining_pools,
+            pool_commands::create_mining_pool,
+            pool_commands::join_mining_pool,
+            pool_commands::leave_mining_pool,
+            pool_commands::get_current_pool_info,
+            pool_commands::get_pool_stats,
+            pool_commands::update_pool_discovery,
             get_disk_space,
             send_chiral_transaction,
             queue_transaction,
