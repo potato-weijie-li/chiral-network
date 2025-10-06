@@ -404,6 +404,83 @@ For issues, questions, or suggestions:
 - Documentation: [Comprehensive guides]
 - Community: Using Zulip
 
+## Running Standalone Nodes
+
+Chiral Network supports running standalone nodes (e.g., bootstrap nodes, storage servers) without building the frontend application. This is ideal for:
+
+- **Bootstrap Nodes**: Public nodes that help new peers join the network
+- **Dedicated Storage Nodes**: Servers providing storage capacity 24/7
+- **Relay Nodes**: Nodes that help with NAT traversal and peer connectivity
+
+### Building the Standalone Node
+
+The standalone node is in the `node/` directory and can be built independently:
+
+```bash
+cd node
+cargo build --release
+```
+
+The compiled binary will be at `node/target/release/chiral-node`.
+
+### Running a Bootstrap Node
+
+Use the provided script:
+
+```bash
+./run-bootstrap.sh
+```
+
+Or run the binary directly:
+
+```bash
+cd node
+./target/release/chiral-node --is-bootstrap --dht-port 4001
+```
+
+### Command Line Options
+
+```
+Options:
+  --dht-port <PORT>                 DHT port to listen on (default: 4001)
+  --bootstrap <MULTIADDR>           Bootstrap nodes to connect to (repeatable)
+  --enable-geth                     Enable geth blockchain node
+  --geth-data-dir <PATH>           Geth data directory
+  --miner-address <ADDRESS>         Ethereum miner address
+  --log-level <LEVEL>              Log level: trace, debug, info, warn, error
+  --show-multiaddr                  Show multiaddr for other nodes to connect
+  --secret <SECRET>                 Generate consistent peer ID
+  --is-bootstrap                    Run in bootstrap mode
+  --disable-autonat                 Disable AutoNAT reachability probes
+  --autonat-probe-interval <SECS>   AutoNAT probe interval (default: 30)
+  --autonat-server <MULTIADDR>      Additional AutoNAT servers
+  --show-reachability               Print reachability snapshot
+  --show-dcutr                      Print DCUtR hole-punching metrics
+  --socks5-proxy <HOST:PORT>        SOCKS5 proxy address
+  --show-downloads                  Print download metrics
+```
+
+### Example: Running a Bootstrap Node
+
+```bash
+# Simple bootstrap node on default port
+./node/target/release/chiral-node --is-bootstrap
+
+# Bootstrap node with custom port and logging
+./node/target/release/chiral-node \
+  --is-bootstrap \
+  --dht-port 4001 \
+  --log-level info \
+  --show-multiaddr \
+  --show-reachability
+
+# Storage node connecting to bootstrap nodes
+./node/target/release/chiral-node \
+  --dht-port 4002 \
+  --bootstrap /ip4/YOUR_BOOTSTRAP_IP/tcp/4001/p2p/PEER_ID \
+  --log-level info
+```
+
 ## Disclaimer
 
 Chiral Network is designed for legitimate file storage and sharing. Users are responsible for ensuring they have the rights to share any content they upload. The platform uses a fully decentralized architecture without centralized market servers to ensure true peer-to-peer operation and prevent commercial misuse or piracy.

@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::command;
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -154,7 +153,7 @@ fn get_current_timestamp() -> u64 {
         .as_secs()
 }
 
-#[command]
+
 pub async fn discover_mining_pools() -> Result<Vec<MiningPool>, String> {
     info!("Discovering available mining pools in decentralized network");
 
@@ -172,7 +171,7 @@ pub async fn discover_mining_pools() -> Result<Vec<MiningPool>, String> {
     Ok(all_pools)
 }
 
-#[command]
+
 pub async fn create_mining_pool(
     address: String,
     name: String,
@@ -228,7 +227,7 @@ pub async fn create_mining_pool(
     Ok(new_pool)
 }
 
-#[command]
+
 pub async fn join_mining_pool(pool_id: String, address: String) -> Result<JoinedPoolInfo, String> {
     info!(
         "Attempting to join mining pool: {} with address: {}",
@@ -285,7 +284,7 @@ pub async fn join_mining_pool(pool_id: String, address: String) -> Result<Joined
     Ok(joined_info)
 }
 
-#[command]
+
 pub async fn leave_mining_pool() -> Result<(), String> {
     info!("Leaving current mining pool");
 
@@ -304,13 +303,13 @@ pub async fn leave_mining_pool() -> Result<(), String> {
     Ok(())
 }
 
-#[command]
+
 pub async fn get_current_pool_info() -> Result<Option<JoinedPoolInfo>, String> {
     let current_pool = CURRENT_POOL.lock().await;
     Ok(current_pool.clone())
 }
 
-#[command]
+
 pub async fn get_pool_stats() -> Result<Option<PoolStats>, String> {
     let current_pool = CURRENT_POOL.lock().await;
 
@@ -336,7 +335,7 @@ pub async fn get_pool_stats() -> Result<Option<PoolStats>, String> {
     }
 }
 
-#[command]
+
 pub async fn update_pool_discovery() -> Result<(), String> {
     info!("Updating pool discovery from decentralized network");
 

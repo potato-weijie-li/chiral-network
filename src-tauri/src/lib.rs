@@ -1,13 +1,12 @@
 // Library exports for testing
-pub mod analytics;
-pub mod multi_source_download;
-
-// Required modules for multi_source_download
-pub mod dht;
-pub mod webrtc_service;
-pub mod peer_selection;
-pub mod file_transfer;
-
-// Required modules for encryption and keystore functionality
-pub mod encryption;
-pub mod keystore;
+// Re-export modules from chiral-node crate
+pub use chiral_node::{
+    analytics,
+    dht,
+    encryption,
+    file_transfer,
+    keystore,
+    multi_source_download,
+    peer_selection,
+    webrtc_service,
+};

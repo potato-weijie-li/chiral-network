@@ -114,22 +114,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Change working directory to src-tauri
-cd src-tauri
-
-if [ ! -d "../dist" ]; then
-    echo "Creating empty frontend dist folder..."
-    mkdir -p ../dist
-fi
+# Change working directory to node
+cd node
 
 # Build the application if needed
-if [ ! -f "target/release/chiral-network" ]; then
-    echo "📦 Building Chiral Network..."
+if [ ! -f "target/release/chiral-node" ]; then
+    echo "📦 Building Chiral Node..."
     cargo build --release
 fi
 
-# Prepare the command - start with required flags (headless and is-bootstrap)
-CMD="./target/release/chiral-network --headless --is-bootstrap"
+# Prepare the command - start with required flags (is-bootstrap)
+CMD="./target/release/chiral-node --is-bootstrap"
 
 # Add DHT port
 CMD="$CMD --dht-port $DHT_PORT"
