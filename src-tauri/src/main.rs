@@ -5,20 +5,11 @@
 
 pub mod commands;
 
-pub mod analytics;
-mod dht;
-mod encryption;
-mod ethereum;
-mod file_transfer;
-mod geth_downloader;
-mod headless;
-mod keystore;
-mod manager;
-mod multi_source_download;
-pub mod net;
-mod peer_selection;
-mod pool;
-mod webrtc_service;
+// Import core modules from chiral-node for code reuse
+use chiral_node::{analytics, dht, encryption, ethereum, file_transfer, geth_downloader, 
+    headless, keystore, manager, multi_source_download, net, peer_selection, pool, webrtc_service};
+
+mod two_fa;
 use std::sync::Mutex as StdMutex;
 
 use crate::commands::proxy::{
