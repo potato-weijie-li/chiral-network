@@ -1,5 +1,5 @@
 use crate::dht::DhtService;
-use crate::AppState;
+use crate::types::AppState;
 use tauri::Emitter;
 use tauri::State;
 // use tracing::info;

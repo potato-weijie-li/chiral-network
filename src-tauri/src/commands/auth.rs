@@ -1,4 +1,4 @@
-use crate::{AppState, ProxyAuthToken};
+use crate::types::{AppState, ProxyAuthToken};
 use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -6,7 +6,7 @@ use tauri::State;
 use tracing::info;
 
 /// In-memory token storage (in production, use a proper database)
-type TokenStore = Mutex<HashMap<String, crate::ProxyAuthToken>>;
+type TokenStore = Mutex<HashMap<String, ProxyAuthToken>>;
 
 #[tauri::command]
 pub(crate) async fn generate_proxy_auth_token(

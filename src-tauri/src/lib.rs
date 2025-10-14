@@ -20,3 +20,17 @@ pub mod proxy_latency;
 pub mod stream_auth;
 // Reputation system
 pub mod reputation;
+
+// Headless mode for standalone nodes
+pub mod headless;
+pub mod ethereum;
+pub mod geth_downloader;
+
+// Commands module
+pub mod commands;
+
+// Shared types
+pub mod types;
+
+// Re-export commonly used types
+pub use types::{AppState, ProxyAuthToken, QueuedTransaction, StreamingUploadSession};

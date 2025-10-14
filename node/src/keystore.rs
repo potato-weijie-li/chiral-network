@@ -162,11 +162,16 @@ fn decrypt_private_key(
     let salt_bytes = hex::decode(salt).map_err(|e| format!("Invalid salt: {}", e))?;
     let iv_bytes = hex::decode(iv).map_err(|e| format!("Invalid IV: {}", e))?;
 
+    if iv_bytes.len() != 16 {
+        return Err(format!("Invalid IV length: expected 16, got {}", iv_bytes.len()));
+    }
+
     let mut key = [0u8; 32];
     pbkdf2::<Hmac<Sha3_256>>(password.as_bytes(), &salt_bytes, 10000, &mut key)
         .map_err(|e| format!("Key derivation failed: {}", e))?;
 
-    let mut cipher = Aes256Ctr::new(&key.into(), &iv_bytes.as_slice().try_into().unwrap());
+    let iv_array: [u8; 16] = iv_bytes.try_into().map_err(|_| "IV conversion failed")?;
+    let mut cipher = Aes256Ctr::new(&key.into(), &iv_array.into());
     let mut data = encrypted_bytes;
     cipher.apply_keystream(&mut data);
 

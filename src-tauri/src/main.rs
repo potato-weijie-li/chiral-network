@@ -152,70 +152,7 @@ fn detect_mime_type_from_filename(filename: &str) -> Option<String> {
     }
 }
 
-#[derive(Clone)]
-struct QueuedTransaction {
-    id: String,
-    to_address: String,
-    amount: f64,
-    timestamp: u64,
-}
-
-#[derive(Clone)]
-struct ProxyAuthToken {
-    token: String,
-    proxy_address: String,
-    expires_at: u64,
-    created_at: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct StreamingUploadSession {
-    pub file_name: String,
-    pub file_size: u64,
-    pub received_chunks: u32,
-    pub total_chunks: u32,
-    pub hasher: sha2::Sha256,
-    pub created_at: std::time::SystemTime,
-    pub chunk_cids: Vec<String>,
-    pub file_data: Vec<u8>,
-}
-
-struct AppState {
-    geth: Mutex<GethProcess>,
-    downloader: Arc<GethDownloader>,
-    miner_address: Mutex<Option<String>>,
-
-    // Wrap in Arc so they can be cloned
-    active_account: Arc<Mutex<Option<String>>>,
-    active_account_private_key: Arc<Mutex<Option<String>>>,
-
-    rpc_url: Mutex<String>,
-    dht: Mutex<Option<Arc<DhtService>>>,
-    file_transfer: Mutex<Option<Arc<FileTransferService>>>,
-    webrtc: Mutex<Option<Arc<WebRTCService>>>,
-    multi_source_download: Mutex<Option<Arc<MultiSourceDownloadService>>>,
-    keystore: Arc<Mutex<Keystore>>,
-    proxies: Arc<Mutex<Vec<ProxyNode>>>,
-    privacy_proxies: Arc<Mutex<Vec<String>>>,
-    file_transfer_pump: Mutex<Option<JoinHandle<()>>>,
-    multi_source_pump: Mutex<Option<JoinHandle<()>>>,
-    socks5_proxy_cli: Mutex<Option<String>>,
-    analytics: Arc<analytics::AnalyticsService>,
-
-    // New fields for transaction queue
-    transaction_queue: Arc<Mutex<VecDeque<QueuedTransaction>>>,
-    transaction_processor: Mutex<Option<JoinHandle<()>>>,
-    processing_transaction: Arc<Mutex<bool>>,
-
-    // New field for streaming upload sessions
-    upload_sessions: Arc<Mutex<std::collections::HashMap<String, StreamingUploadSession>>>,
-
-    // Proxy authentication tokens storage
-    proxy_auth_tokens: Arc<Mutex<std::collections::HashMap<String, ProxyAuthToken>>>,
-
-    // Stream authentication service
-    stream_auth: Arc<Mutex<StreamAuthService>>,
-}
+use chiral_network::types::{AppState, ProxyAuthToken, QueuedTransaction, StreamingUploadSession};
 
 #[tauri::command]
 async fn create_chiral_account(state: State<'_, AppState>) -> Result<EthAccount, String> {
