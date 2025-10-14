@@ -284,9 +284,7 @@ async fn save_account_to_keystore(
     private_key: String,
     password: String,
 ) -> Result<(), String> {
-    let mut keystore = Keystore::load()?;
-    keystore.add_account(address, &private_key, &password)?;
-    Ok(())
+    chiral_node::keystore::save_account_to_keystore(address, private_key, password).await
 }
 
 #[tauri::command]
@@ -295,10 +293,8 @@ async fn load_account_from_keystore(
     password: String,
     state: State<'_, AppState>,
 ) -> Result<EthAccount, String> {
-    let keystore = Keystore::load()?;
-
-    // Get decrypted private key from keystore
-    let private_key = keystore.get_account(&address, &password)?;
+    // Get decrypted private key from keystore using node crate
+    let private_key = chiral_node::keystore::load_account_from_keystore(address.clone(), password).await?;
 
     // Set the active account in the app state
     {
@@ -325,8 +321,7 @@ async fn load_account_from_keystore(
 
 #[tauri::command]
 async fn list_keystore_accounts() -> Result<Vec<String>, String> {
-    let keystore = Keystore::load()?;
-    Ok(keystore.list_accounts())
+    chiral_node::keystore::list_keystore_accounts().await
 }
 
 #[tauri::command]
