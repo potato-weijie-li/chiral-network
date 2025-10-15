@@ -21,13 +21,13 @@ pub mod stream_auth;
 // Reputation system
 pub mod reputation;
 
+// Commands module - only bootstrap is needed for library
+pub mod commands;
+
 // Headless mode for standalone nodes
 pub mod headless;
 pub mod ethereum;
 pub mod geth_downloader;
-
-// Commands module
-pub mod commands;
 
 // Shared types
 pub mod types;

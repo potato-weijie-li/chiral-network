@@ -4,6 +4,7 @@
 )]
 
 pub mod commands;
+pub mod types;
 
 pub mod analytics;
 mod dht;
@@ -32,7 +33,7 @@ use crate::commands::auth::{
     generate_proxy_auth_token, validate_proxy_auth_token, revoke_proxy_auth_token,
     cleanup_expired_proxy_auth_tokens,
 };
-use chiral_network::stream_auth::{
+use crate::stream_auth::{
     AuthMessage, HmacKeyExchangeConfirmation, HmacKeyExchangeRequest, HmacKeyExchangeResponse,
     StreamAuthService,
 };
@@ -66,7 +67,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, State,
 };
-use tokio::{sync::Mutex, task::JoinHandle, time::sleep};
+use tokio::{sync::Mutex, time::sleep};
 use totp_rs::{Algorithm, Secret, TOTP};
 use tracing::{error, info, warn};
 use webrtc_service::{WebRTCFileRequest, WebRTCService};
@@ -152,7 +153,7 @@ fn detect_mime_type_from_filename(filename: &str) -> Option<String> {
     }
 }
 
-use chiral_network::types::{AppState, ProxyAuthToken, QueuedTransaction, StreamingUploadSession};
+use crate::types::{AppState, QueuedTransaction, StreamingUploadSession};
 
 #[tauri::command]
 async fn create_chiral_account(state: State<'_, AppState>) -> Result<EthAccount, String> {
