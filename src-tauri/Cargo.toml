@@ -13,10 +13,19 @@ name = "chiral_network"
 path = "src/lib.rs"
 crate-type = ["lib"]
 
+[[bin]]
+name = "chiral-network"
+path = "src/main.rs"
+
+[[bin]]
+name = "chiral-network-node"
+path = "src/bin/node.rs"
+
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
+chiral-node = { path = "../node" }
 tauri = { version = "2.1", features = ["macos-private-api", "tray-icon"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -313,6 +313,44 @@ npm test
 npm run test:watch
 ```
 
+### Running Standalone Nodes (Bootstrap, Relay, etc.)
+
+The project now supports running standalone nodes without building the frontend. This is useful for:
+- Bootstrap nodes on servers
+- Relay nodes for NAT traversal
+- Headless nodes for continuous file seeding
+
+```bash
+# Build the standalone node binary
+cd src-tauri
+cargo build --release --bin chiral-network-node
+
+# Run a bootstrap node
+./target/release/chiral-network-node --is-bootstrap --dht-port 4001
+
+# Or use the convenience script
+cd ..
+./run-bootstrap.sh --port 4001 --log-level info
+```
+
+**Key benefits:**
+- No frontend build required
+- Faster compilation time
+- Lower resource usage
+- Suitable for server deployments
+
+**Available options:**
+- `--dht-port`: DHT listening port (default: 4001)
+- `--is-bootstrap`: Run as a bootstrap node
+- `--bootstrap`: Connect to existing bootstrap nodes
+- `--enable-geth`: Enable Ethereum node
+- `--log-level`: Set log level (trace, debug, info, warn, error)
+- `--show-multiaddr`: Display node's multiaddress
+- `--disable-autonat`: Disable NAT reachability detection
+- `--socks5-proxy`: Use SOCKS5 proxy for connections
+
+For more details, see the [node crate documentation](node/README.md).
+
 ### Getting Started
 
 1. **Launch the application** - Opens to the Download page
