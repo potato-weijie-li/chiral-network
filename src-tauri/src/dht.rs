@@ -4944,6 +4944,46 @@ mod tests {
         assert_eq!(extracted, keyword);
     }
 
+    #[test]
+    fn test_pending_index_update_creation() {
+        // Test that we can create a PendingIndexUpdate
+        let keyword = "document".to_string();
+        let index_key_str = format!("idx:{}", keyword);
+        let index_key = kad::RecordKey::new(&index_key_str.as_bytes());
+        let merkle_root = "abc123def456".to_string();
+        
+        let pending = PendingIndexUpdate {
+            keyword: keyword.clone(),
+            index_key: index_key.clone(),
+            new_merkle_root: merkle_root.clone(),
+            timestamp: std::time::Instant::now(),
+        };
+        
+        assert_eq!(pending.keyword, keyword);
+        assert_eq!(pending.new_merkle_root, merkle_root);
+        assert_eq!(pending.index_key.as_ref(), index_key_str.as_bytes());
+    }
+
+    #[test]
+    fn test_size_limit_check() {
+        // Test that we can detect when an index exceeds size limits
+        const MAX_RECORD_SIZE: usize = 2048;
+        
+        // Create a list that's within limits
+        let small_list: Vec<String> = (0..10)
+            .map(|i| format!("merkle_root_{}", i))
+            .collect();
+        let serialized = serde_json::to_vec(&small_list).unwrap();
+        assert!(serialized.len() < MAX_RECORD_SIZE);
+        
+        // Create a list that exceeds limits
+        let large_list: Vec<String> = (0..200)
+            .map(|i| format!("very_long_merkle_root_hash_string_{}", i))
+            .collect();
+        let serialized = serde_json::to_vec(&large_list).unwrap();
+        assert!(serialized.len() > MAX_RECORD_SIZE);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_command_stops_dht_service() {
         let service = match DhtService::new(
