@@ -4128,17 +4128,20 @@ impl DhtService {
         let keywords = extract_keywords(&file_name);
         info!("🔑 Backend: Extracted {} keywords from '{}': {:?}", keywords.len(), file_name, keywords);
         
-        // Search DHT for each keyword
+        // Search DHT for each keyword with reduced timeout to fit in frontend's 2s limit
+        // Use shorter timeout per keyword so total time stays under 2 seconds
         let mut dht_hashes: Vec<String> = Vec::new();
         for keyword in keywords {
             info!("🔍 Backend: Searching DHT for keyword: '{}'", keyword);
-            match self.search_by_keyword(keyword.clone(), 3000).await {
+            // Use very short timeout (800ms) to ensure we finish within 2s even with multiple keywords
+            match self.search_by_keyword(keyword.clone(), 800).await {
                 Ok(hashes) => {
                     info!("✅ Backend: Found {} hashes for keyword '{}'", hashes.len(), keyword);
                     dht_hashes.extend(hashes);
                 }
                 Err(e) => {
                     warn!("⚠️ Backend: Failed to search keyword '{}': {}", keyword, e);
+                    // Continue with next keyword instead of failing completely
                 }
             }
         }
@@ -4149,26 +4152,32 @@ impl DhtService {
         info!("📊 Backend: Total unique hashes from DHT: {}", dht_hashes.len());
         
         // Step 3: Fetch metadata for DHT results and filter by exact filename match
-        for hash in dht_hashes {
-            // Skip if we already have this hash in local results
-            if versions.iter().any(|v| v.merkle_root == hash) {
-                continue;
+        // Limit the number of hashes we try to fetch to stay within time budget
+        let hashes_to_fetch: Vec<String> = dht_hashes.into_iter()
+            .filter(|hash| !versions.iter().any(|v| &v.merkle_root == hash))
+            .take(5) // Limit to 5 hashes to keep total time reasonable
+            .collect();
+        
+        if !hashes_to_fetch.is_empty() {
+            info!("📡 Backend: Will fetch metadata for {} hashes", hashes_to_fetch.len());
+            
+            // Initiate all metadata fetches
+            for hash in &hashes_to_fetch {
+                if let Err(e) = self.search_file(hash.clone()).await {
+                    warn!("⚠️ Backend: Failed to initiate fetch for {}: {}", hash, e);
+                }
             }
             
-            // Fetch metadata from DHT
-            info!("📡 Backend: Fetching metadata for hash: {}", hash);
-            if let Err(e) = self.search_file(hash.clone()).await {
-                warn!("⚠️ Backend: Failed to fetch metadata for {}: {}", hash, e);
-            }
+            // Wait briefly for metadata to arrive (reduced from 100ms per hash to 50ms total)
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             
-            // Wait a bit for the metadata to be received and cached
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            
-            // Try to get it from cache now
+            // Check cache for all hashes at once
             if let Ok(all_cached) = self.get_all_file_metadata().await {
-                if let Some(metadata) = all_cached.into_iter().find(|m| m.merkle_root == hash && m.file_name == file_name) {
-                    info!("✅ Backend: Retrieved metadata from cache for {}", hash);
-                    versions.push(metadata);
+                for metadata in all_cached.into_iter() {
+                    if hashes_to_fetch.contains(&metadata.merkle_root) && metadata.file_name == file_name {
+                        info!("✅ Backend: Retrieved metadata from cache for {}", metadata.merkle_root);
+                        versions.push(metadata);
+                    }
                 }
             }
         }
