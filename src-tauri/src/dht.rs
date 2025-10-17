@@ -216,6 +216,10 @@ pub enum DhtCommand {
         cid: Cid,
         data: Vec<u8>,
     },
+    SearchByKeyword {
+        keyword: String,
+        sender: oneshot::Sender<Result<Vec<String>, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -464,6 +468,12 @@ struct PendingSearch {
 #[derive(Debug)]
 struct PendingProviderQuery {
     id: u64,
+    sender: oneshot::Sender<Result<Vec<String>, String>>,
+}
+
+#[derive(Debug)]
+struct PendingKeywordSearch {
+    keyword: String,
     sender: oneshot::Sender<Result<Vec<String>, String>>,
 }
 
@@ -1907,6 +1917,24 @@ async fn run_dht_node(
                             }
                         }
                     }
+                    Some(DhtCommand::SearchByKeyword { keyword, sender }) => {
+                        // Search for files by keyword in DHT index
+                        let index_key_str = format!("idx:{}", keyword.to_lowercase());
+                        let index_key = kad::RecordKey::new(&index_key_str.as_bytes());
+                        let query_id = swarm.behaviour_mut().kademlia.get_record(index_key.clone());
+                        
+                        info!("Searching keyword index '{}' (query_id: {:?})", keyword, query_id);
+                        
+                        // Track this search query
+                        let pending_search = PendingKeywordSearch {
+                            keyword: keyword.clone(),
+                            sender,
+                        };
+                        pending_provider_queries.lock().await.insert(index_key_str, PendingProviderQuery {
+                            id: 0,
+                            sender: pending_search.sender,
+                        });
+                    }
                     None => {
                         info!("DHT command channel closed; shutting down node task");
                         break 'outer;
@@ -2578,7 +2606,30 @@ async fn handle_kademlia_event(
                         
                         // Determine if this is an index query (starts with "idx:")
                         if key_str.starts_with("idx:") {
-                            // This is a keyword index record - handle index update
+                            // First, check if this is a keyword SEARCH query
+                            let key_str_owned = key_str.to_string();
+                            if let Some(pending_query) = pending_provider_queries.lock().await.remove(&key_str_owned) {
+                                // This is a keyword search query - return the list of merkle roots
+                                info!("Processing keyword search for '{}'", key_str);
+                                
+                                // Deserialize the index (JSON array of merkle roots)
+                                let merkle_roots: Vec<String> = match serde_json::from_slice(&peer_record.record.value) {
+                                    Ok(list) => list,
+                                    Err(e) => {
+                                        warn!("Failed to deserialize keyword index for '{}': {}", key_str, e);
+                                        let _ = pending_query.sender.send(Err(format!(
+                                            "Failed to parse keyword index: {}", e
+                                        )));
+                                        return;
+                                    }
+                                };
+                                
+                                info!("Found {} files for keyword '{}'", merkle_roots.len(), key_str);
+                                let _ = pending_query.sender.send(Ok(merkle_roots));
+                                return;
+                            }
+                            
+                            // Otherwise, this is a keyword index UPDATE query
                             if let Some(query_id) = get_record_queries.lock().await.keys().find(|_| {
                                 // Match by comparing the key in PendingIndexUpdate
                                 get_record_queries.blocking_lock().iter().any(|(_, pending)| {
@@ -2761,7 +2812,16 @@ async fn handle_kademlia_event(
                         let key_str = String::from_utf8_lossy(key.as_ref());
                         
                         if key_str.starts_with("idx:") {
-                            // This is a keyword index query that found no existing record
+                            // First check if this is a keyword SEARCH query
+                            let key_str_owned = key_str.to_string();
+                            if let Some(pending_query) = pending_provider_queries.lock().await.remove(&key_str_owned) {
+                                // Keyword search found no results
+                                info!("Keyword '{}' not found in DHT (no files indexed)", key_str);
+                                let _ = pending_query.sender.send(Ok(vec![])); // Return empty list
+                                return;
+                            }
+                            
+                            // Otherwise, this is a keyword index UPDATE query that found no existing record
                             // Find and remove the pending query, then create a new index
                             let pending_opt = {
                                 let mut queries = get_record_queries.lock().await;
@@ -4024,6 +4084,37 @@ impl DhtService {
             .send(DhtCommand::SearchFile(file_hash))
             .await
             .map_err(|e| e.to_string())
+    }
+
+    /// Search for files by keyword in DHT indices
+    /// Returns a list of merkle roots (file hashes) that match the keyword
+    pub async fn search_by_keyword(&self, keyword: String, timeout_ms: u64) -> Result<Vec<String>, String> {
+        let (tx, rx) = oneshot::channel();
+        
+        self.cmd_tx
+            .send(DhtCommand::SearchByKeyword {
+                keyword: keyword.clone(),
+                sender: tx,
+            })
+            .await
+            .map_err(|e| format!("Failed to send search command: {}", e))?;
+        
+        // Wait for response with timeout
+        let timeout_duration = Duration::from_millis(timeout_ms);
+        match tokio::time::timeout(timeout_duration, rx).await {
+            Ok(Ok(merkle_roots)) => {
+                info!("Keyword search for '{}' returned {} results", keyword, merkle_roots.len());
+                Ok(merkle_roots)
+            }
+            Ok(Err(e)) => {
+                warn!("Keyword search for '{}' failed: {}", keyword, e);
+                Err(e)
+            }
+            Err(_) => {
+                warn!("Keyword search for '{}' timed out after {}ms", keyword, timeout_ms);
+                Err(format!("Keyword search timed out after {}ms", timeout_ms))
+            }
+        }
     }
 
     pub async fn get_file(&self, file_hash: String) -> Result<(), String> {
