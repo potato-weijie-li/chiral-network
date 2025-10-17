@@ -4102,15 +4102,21 @@ impl DhtService {
         // Wait for response with timeout
         let timeout_duration = Duration::from_millis(timeout_ms);
         match tokio::time::timeout(timeout_duration, rx).await {
-            Ok(Ok(merkle_roots)) => {
-                info!("Keyword search for '{}' returned {} results", keyword, merkle_roots.len());
-                Ok(merkle_roots)
-            }
-            Ok(Err(e)) => {
-                warn!("Keyword search for '{}' failed: {}", keyword, e);
-                Err(e)
+            Ok(recv_result) => {
+                // Channel received successfully, now check DHT result
+                match recv_result {
+                    Ok(merkle_roots) => {
+                        info!("Keyword search for '{}' returned {} results", keyword, merkle_roots.len());
+                        Ok(merkle_roots)
+                    }
+                    Err(e) => {
+                        warn!("Keyword search for '{}' failed: {}", keyword, e);
+                        Err(e)
+                    }
+                }
             }
             Err(_) => {
+                // Timeout elapsed
                 warn!("Keyword search for '{}' timed out after {}ms", keyword, timeout_ms);
                 Err(format!("Keyword search timed out after {}ms", timeout_ms))
             }
