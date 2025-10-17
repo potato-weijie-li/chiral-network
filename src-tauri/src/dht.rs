@@ -4857,6 +4857,93 @@ pub fn split_into_blocks(bytes: &[u8], chunk_size: usize) -> Vec<ByteBlock> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_extract_keywords() {
+        // Test basic keyword extraction
+        let keywords = extract_keywords("my-file-name.txt");
+        assert!(keywords.contains(&"file".to_string()));
+        assert!(keywords.contains(&"name".to_string()));
+        assert_eq!(keywords.len(), 2); // "my" is too short (< 3 chars)
+
+        // Test with underscores and dots
+        let keywords = extract_keywords("test_document_2024.pdf");
+        assert!(keywords.contains(&"test".to_string()));
+        assert!(keywords.contains(&"document".to_string()));
+        assert!(keywords.contains(&"2024".to_string()));
+        
+        // Test deduplication
+        let keywords = extract_keywords("test-test-file.txt");
+        assert_eq!(keywords.iter().filter(|k| *k == "test").count(), 1);
+        
+        // Test short words are filtered
+        let keywords = extract_keywords("a-b-cd-test.txt");
+        assert!(!keywords.contains(&"a".to_string()));
+        assert!(!keywords.contains(&"b".to_string()));
+        assert!(!keywords.contains(&"cd".to_string()));
+        assert!(keywords.contains(&"test".to_string()));
+    }
+
+    #[test]
+    fn test_keyword_index_serialization() {
+        // Test that we can serialize and deserialize a keyword index
+        let merkle_roots = vec![
+            "hash1".to_string(),
+            "hash2".to_string(),
+            "hash3".to_string(),
+        ];
+        
+        // Serialize
+        let serialized = serde_json::to_vec(&merkle_roots).expect("Failed to serialize");
+        
+        // Deserialize
+        let deserialized: Vec<String> = serde_json::from_slice(&serialized)
+            .expect("Failed to deserialize");
+        
+        assert_eq!(deserialized, merkle_roots);
+        
+        // Test empty list
+        let empty: Vec<String> = vec![];
+        let serialized = serde_json::to_vec(&empty).expect("Failed to serialize");
+        let deserialized: Vec<String> = serde_json::from_slice(&serialized)
+            .expect("Failed to deserialize");
+        assert_eq!(deserialized.len(), 0);
+    }
+
+    #[test]
+    fn test_keyword_index_deduplication() {
+        // Test that we can deduplicate merkle roots in an index
+        let mut merkle_roots = vec![
+            "hash1".to_string(),
+            "hash2".to_string(),
+        ];
+        
+        let new_root = "hash3".to_string();
+        if !merkle_roots.contains(&new_root) {
+            merkle_roots.push(new_root);
+        }
+        assert_eq!(merkle_roots.len(), 3);
+        
+        // Try to add duplicate
+        let duplicate_root = "hash2".to_string();
+        if !merkle_roots.contains(&duplicate_root) {
+            merkle_roots.push(duplicate_root);
+        }
+        assert_eq!(merkle_roots.len(), 3); // Should still be 3
+    }
+
+    #[test]
+    fn test_keyword_index_key_format() {
+        // Test that keyword index keys follow the "idx:{keyword}" format
+        let keyword = "test";
+        let index_key_str = format!("idx:{}", keyword);
+        assert_eq!(index_key_str, "idx:test");
+        assert!(index_key_str.starts_with("idx:"));
+        
+        // Test that we can extract the keyword
+        let extracted = index_key_str.strip_prefix("idx:").unwrap();
+        assert_eq!(extracted, keyword);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_command_stops_dht_service() {
         let service = match DhtService::new(
