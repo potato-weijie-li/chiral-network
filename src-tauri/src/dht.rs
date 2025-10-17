@@ -16,13 +16,13 @@ use rs_merkle::{Hasher, MerkleTree};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tracing::{debug, error, info, warn, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::peer_selection::{PeerMetrics, PeerSelectionService, SelectionStrategy};
 use crate::webrtc_service::{get_webrtc_service, FileChunk};
@@ -61,10 +61,9 @@ use libp2p::{
     mdns::{tokio::Behaviour as Mdns, Event as MdnsEvent},
     noise,
     ping::{self, Behaviour as Ping, Event as PingEvent},
-    relay, request_response as rr,
+    quic, relay, request_response as rr,
     swarm::{behaviour::toggle, NetworkBehaviour, SwarmEvent},
-    tcp, Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder,
-    quic, yamux
+    tcp, yamux, Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder,
 };
 use rand::rngs::OsRng;
 const EXPECTED_PROTOCOL_VERSION: &str = "/chiral/1.0.0";
@@ -868,7 +867,7 @@ fn should_try_relay(
     true
 }
 
-/// candidates(HashSet<String>) → (PeerId, Multiaddr) 
+/// candidates(HashSet<String>) → (PeerId, Multiaddr)
 fn filter_relay_candidates(
     relay_candidates: &HashSet<String>,
     blacklist: &HashSet<PeerId>,
@@ -891,7 +890,11 @@ fn filter_relay_candidates(
                 if !blacklist.contains(&pid) {
                     if let Some(until) = cooldown.get(&pid) {
                         if Instant::now() < *until {
-                            tracing::debug!("skip cooldown relay candidate {} until {:?}", pid, until);
+                            tracing::debug!(
+                                "skip cooldown relay candidate {} until {:?}",
+                                pid,
+                                until
+                            );
                             continue;
                         }
                     }
@@ -904,7 +907,6 @@ fn filter_relay_candidates(
     }
     out
 }
-
 
 fn extract_relay_peer(address: &Multiaddr) -> Option<PeerId> {
     use libp2p::multiaddr::Protocol;
@@ -1301,7 +1303,10 @@ async fn run_dht_node(
     let mut last_tried_relay: Option<PeerId> = None;
 
     #[derive(Debug, Clone, Copy)]
-    enum RelayErrClass { Permanent, Transient }
+    enum RelayErrClass {
+        Permanent,
+        Transient,
+    }
 
     fn classify_err_str(s: &str) -> RelayErrClass {
         if s.contains("Reservation(Unsupported)") || s.contains("Denied") {
@@ -1365,7 +1370,8 @@ async fn run_dht_node(
     }
 
     // First attempt: filter candidates + try listen_on /p2p-circuit
-    let filtered_relays = filter_relay_candidates(&relay_candidates, &relay_blacklist, &relay_cooldown);
+    let filtered_relays =
+        filter_relay_candidates(&relay_candidates, &relay_blacklist, &relay_cooldown);
     if filtered_relays.is_empty() {
         tracing::warn!("No usable relay candidates after blacklist/cooldown filtering");
     } else {
@@ -1390,7 +1396,7 @@ async fn run_dht_node(
             _= dht_maintenance_interval.tick() => {
                 info!("Triggering periodic DHT maintenanace: Kademlia bootstrap and Record Refresh.");
                 let _ = swarm.behaviour_mut().kademlia.bootstrap();
-                
+
                 // Cleanup timed-out get_record queries for keyword indices
                 let now = std::time::Instant::now();
                 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1403,7 +1409,7 @@ async fn run_dht_node(
                         }
                     }
                 }
-                
+
                 for (query_id, keyword) in timed_out_queries {
                     warn!("Keyword index query timed out for '{}', removing from pending", keyword);
                     get_record_queries.lock().await.remove(&query_id);
@@ -1922,9 +1928,9 @@ async fn run_dht_node(
                         let index_key_str = format!("idx:{}", keyword.to_lowercase());
                         let index_key = kad::RecordKey::new(&index_key_str.as_bytes());
                         let query_id = swarm.behaviour_mut().kademlia.get_record(index_key.clone());
-                        
+
                         info!("Searching keyword index '{}' (query_id: {:?})", keyword, query_id);
-                        
+
                         // Track this search query
                         let pending_search = PendingKeywordSearch {
                             keyword: keyword.clone(),
@@ -2553,8 +2559,8 @@ async fn run_dht_node(
 }
 
 fn extract_bootstrap_peer_ids(bootstrap_nodes: &[String]) -> HashSet<PeerId> {
-    use libp2p::{Multiaddr, PeerId};
     use libp2p::multiaddr::Protocol;
+    use libp2p::{Multiaddr, PeerId};
 
     bootstrap_nodes
         .iter()
@@ -2563,7 +2569,9 @@ fn extract_bootstrap_peer_ids(bootstrap_nodes: &[String]) -> HashSet<PeerId> {
             ma.iter().find_map(|p| {
                 if let Protocol::P2p(mh) = p {
                     PeerId::from_multihash(mh.into()).ok()
-                } else { None }
+                } else {
+                    None
+                }
             })
         })
         .collect()
@@ -2587,11 +2595,17 @@ async fn handle_kademlia_event(
         KademliaEvent::UnroutablePeer { peer } => {
             warn!("Peer {} is unroutable", peer);
         }
-        KademliaEvent::RoutablePeer { peer, address,  .. } => {
+        KademliaEvent::RoutablePeer { peer, address, .. } => {
             debug!("Peer {} became routable", peer);
             if !ma_plausibly_reachable(&address) {
-                swarm.behaviour_mut().kademlia.remove_address(&peer, &address);
-                debug!("⏭️ Kad RoutablePeer ignored (unreachable): {} -> {}", peer, address);
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .remove_address(&peer, &address);
+                debug!(
+                    "⏭️ Kad RoutablePeer ignored (unreachable): {} -> {}",
+                    peer, address
+                );
             } else {
                 debug!("✅ Kad RoutablePeer accepted: {} -> {}", peer, address);
             }
@@ -2603,47 +2617,69 @@ async fn handle_kademlia_event(
                         // Check if this is a keyword index query
                         let key_bytes = peer_record.record.key.as_ref();
                         let key_str = String::from_utf8_lossy(key_bytes);
-                        
+
                         // Determine if this is an index query (starts with "idx:")
                         if key_str.starts_with("idx:") {
                             // First, check if this is a keyword SEARCH query
                             let key_str_owned = key_str.to_string();
-                            if let Some(pending_query) = pending_provider_queries.lock().await.remove(&key_str_owned) {
+                            if let Some(pending_query) =
+                                pending_provider_queries.lock().await.remove(&key_str_owned)
+                            {
                                 // This is a keyword search query - return the list of merkle roots
                                 info!("Processing keyword search for '{}'", key_str);
-                                
+
                                 // Deserialize the index (JSON array of merkle roots)
-                                let merkle_roots: Vec<String> = match serde_json::from_slice(&peer_record.record.value) {
-                                    Ok(list) => list,
-                                    Err(e) => {
-                                        warn!("Failed to deserialize keyword index for '{}': {}", key_str, e);
-                                        let _ = pending_query.sender.send(Err(format!(
-                                            "Failed to parse keyword index: {}", e
-                                        )));
-                                        return;
-                                    }
-                                };
-                                
-                                info!("Found {} files for keyword '{}'", merkle_roots.len(), key_str);
+                                let merkle_roots: Vec<String> =
+                                    match serde_json::from_slice(&peer_record.record.value) {
+                                        Ok(list) => list,
+                                        Err(e) => {
+                                            warn!(
+                                                "Failed to deserialize keyword index for '{}': {}",
+                                                key_str, e
+                                            );
+                                            let _ = pending_query.sender.send(Err(format!(
+                                                "Failed to parse keyword index: {}",
+                                                e
+                                            )));
+                                            return;
+                                        }
+                                    };
+
+                                info!(
+                                    "Found {} files for keyword '{}'",
+                                    merkle_roots.len(),
+                                    key_str
+                                );
                                 let _ = pending_query.sender.send(Ok(merkle_roots));
                                 return;
                             }
-                            
+
                             // Otherwise, this is a keyword index UPDATE query
-                            if let Some(query_id) = get_record_queries.lock().await.keys().find(|_| {
-                                // Match by comparing the key in PendingIndexUpdate
-                                get_record_queries.blocking_lock().iter().any(|(_, pending)| {
-                                    pending.index_key.as_ref() == key_bytes
+                            if let Some(query_id) = get_record_queries
+                                .lock()
+                                .await
+                                .keys()
+                                .find(|_| {
+                                    // Match by comparing the key in PendingIndexUpdate
+                                    get_record_queries
+                                        .blocking_lock()
+                                        .iter()
+                                        .any(|(_, pending)| pending.index_key.as_ref() == key_bytes)
                                 })
-                            }).copied() {
-                                if let Some(pending_update) = get_record_queries.lock().await.remove(&query_id) {
+                                .copied()
+                            {
+                                if let Some(pending_update) =
+                                    get_record_queries.lock().await.remove(&query_id)
+                                {
                                     info!(
                                         "Processing keyword index update for '{}' with merkle_root '{}'",
                                         pending_update.keyword, pending_update.new_merkle_root
                                     );
 
                                     // Deserialize existing index (JSON array of strings)
-                                    let mut merkle_roots: Vec<String> = match serde_json::from_slice(&peer_record.record.value) {
+                                    let mut merkle_roots: Vec<String> = match serde_json::from_slice(
+                                        &peer_record.record.value,
+                                    ) {
                                         Ok(list) => list,
                                         Err(e) => {
                                             warn!("Failed to deserialize keyword index for '{}': {}. Creating new index.", pending_update.keyword, e);
@@ -2670,9 +2706,12 @@ async fn handle_kademlia_event(
                                         Ok(data) => data,
                                         Err(e) => {
                                             error!("Failed to serialize updated index for keyword '{}': {}", pending_update.keyword, e);
-                                            let _ = event_tx.send(DhtEvent::Error(format!(
-                                                "Failed to serialize keyword index: {}", e
-                                            ))).await;
+                                            let _ = event_tx
+                                                .send(DhtEvent::Error(format!(
+                                                    "Failed to serialize keyword index: {}",
+                                                    e
+                                                )))
+                                                .await;
                                             return;
                                         }
                                     };
@@ -2684,9 +2723,12 @@ async fn handle_kademlia_event(
                                             "Keyword index for '{}' exceeds size limit: {} bytes (max: {})",
                                             pending_update.keyword, serialized.len(), MAX_RECORD_SIZE
                                         );
-                                        let _ = event_tx.send(DhtEvent::Error(format!(
-                                            "Keyword index too large: {} bytes", serialized.len()
-                                        ))).await;
+                                        let _ = event_tx
+                                            .send(DhtEvent::Error(format!(
+                                                "Keyword index too large: {} bytes",
+                                                serialized.len()
+                                            )))
+                                            .await;
                                         return;
                                     }
 
@@ -2698,18 +2740,31 @@ async fn handle_kademlia_event(
                                         expires: None,
                                     };
 
-                                    match swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
+                                    match swarm
+                                        .behaviour_mut()
+                                        .kademlia
+                                        .put_record(record, kad::Quorum::One)
+                                    {
                                         Ok(_) => {
                                             info!("Successfully initiated put_record for keyword '{}'", pending_update.keyword);
-                                            let _ = event_tx.send(DhtEvent::Info(format!(
-                                                "Updated keyword index: '{}'", pending_update.keyword
-                                            ))).await;
+                                            let _ = event_tx
+                                                .send(DhtEvent::Info(format!(
+                                                    "Updated keyword index: '{}'",
+                                                    pending_update.keyword
+                                                )))
+                                                .await;
                                         }
                                         Err(e) => {
-                                            error!("Failed to put_record for keyword '{}': {}", pending_update.keyword, e);
-                                            let _ = event_tx.send(DhtEvent::Error(format!(
-                                                "Failed to update keyword index: {}", e
-                                            ))).await;
+                                            error!(
+                                                "Failed to put_record for keyword '{}': {}",
+                                                pending_update.keyword, e
+                                            );
+                                            let _ = event_tx
+                                                .send(DhtEvent::Error(format!(
+                                                    "Failed to update keyword index: {}",
+                                                    e
+                                                )))
+                                                .await;
                                         }
                                     }
                                 }
@@ -2717,9 +2772,9 @@ async fn handle_kademlia_event(
                         } else {
                             // This is a file metadata query - existing logic
                             // Try to parse DHT record as essential metadata JSON
-                            if let Ok(metadata_json) =
-                                serde_json::from_slice::<serde_json::Value>(&peer_record.record.value)
-                            {
+                            if let Ok(metadata_json) = serde_json::from_slice::<serde_json::Value>(
+                                &peer_record.record.value,
+                            ) {
                                 // Construct FileMetadata from the JSON
                                 if let (
                                     Some(file_hash),
@@ -2806,52 +2861,61 @@ async fn handle_kademlia_event(
                 },
                 QueryResult::GetRecord(Err(err)) => {
                     warn!("GetRecord error: {:?}", err);
-                    
+
                     // Check if this is a keyword index query that failed
                     if let kad::GetRecordError::NotFound { key, .. } = &err {
                         let key_str = String::from_utf8_lossy(key.as_ref());
-                        
+
                         if key_str.starts_with("idx:") {
                             // First check if this is a keyword SEARCH query
                             let key_str_owned = key_str.to_string();
-                            if let Some(pending_query) = pending_provider_queries.lock().await.remove(&key_str_owned) {
+                            if let Some(pending_query) =
+                                pending_provider_queries.lock().await.remove(&key_str_owned)
+                            {
                                 // Keyword search found no results
                                 info!("Keyword '{}' not found in DHT (no files indexed)", key_str);
                                 let _ = pending_query.sender.send(Ok(vec![])); // Return empty list
                                 return;
                             }
-                            
+
                             // Otherwise, this is a keyword index UPDATE query that found no existing record
                             // Find and remove the pending query, then create a new index
                             let pending_opt = {
                                 let mut queries = get_record_queries.lock().await;
-                                queries.iter()
+                                queries
+                                    .iter()
                                     .find(|(_, pending)| pending.index_key.as_ref() == key.as_ref())
                                     .map(|(qid, _)| *qid)
                                     .and_then(|qid| queries.remove(&qid))
                             };
-                            
+
                             if let Some(pending_update) = pending_opt {
                                 info!(
                                     "Keyword index not found for '{}', creating new index with merkle_root '{}'",
                                     pending_update.keyword, pending_update.new_merkle_root
                                 );
-                                
+
                                 // Create new index with single merkle_root
                                 let merkle_roots = vec![pending_update.new_merkle_root.clone()];
-                                
+
                                 // Serialize the new list
                                 let serialized = match serde_json::to_vec(&merkle_roots) {
                                     Ok(data) => data,
                                     Err(e) => {
-                                        error!("Failed to serialize new index for keyword '{}': {}", pending_update.keyword, e);
-                                        let _ = event_tx.send(DhtEvent::Error(format!(
-                                            "Failed to serialize keyword index: {}", e
-                                        ))).await;
+                                        error!(
+                                            "Failed to serialize new index for keyword '{}': {}",
+                                            pending_update.keyword, e
+                                        );
+                                        let _ = event_tx
+                                            .send(DhtEvent::Error(format!(
+                                                "Failed to serialize keyword index: {}",
+                                                e
+                                            )))
+                                            .await;
                                         return;
                                     }
                                 };
-                                
+
                                 // Create and publish new record
                                 let record = Record {
                                     key: pending_update.index_key.clone(),
@@ -2859,19 +2923,35 @@ async fn handle_kademlia_event(
                                     publisher: Some(peer_id),
                                     expires: None,
                                 };
-                                
-                                match swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
+
+                                match swarm
+                                    .behaviour_mut()
+                                    .kademlia
+                                    .put_record(record, kad::Quorum::One)
+                                {
                                     Ok(_) => {
-                                        info!("Successfully created new keyword index for '{}'", pending_update.keyword);
-                                        let _ = event_tx.send(DhtEvent::Info(format!(
-                                            "Created keyword index: '{}'", pending_update.keyword
-                                        ))).await;
+                                        info!(
+                                            "Successfully created new keyword index for '{}'",
+                                            pending_update.keyword
+                                        );
+                                        let _ = event_tx
+                                            .send(DhtEvent::Info(format!(
+                                                "Created keyword index: '{}'",
+                                                pending_update.keyword
+                                            )))
+                                            .await;
                                     }
                                     Err(e) => {
-                                        error!("Failed to put_record for new keyword index '{}': {}", pending_update.keyword, e);
-                                        let _ = event_tx.send(DhtEvent::Error(format!(
-                                            "Failed to create keyword index: {}", e
-                                        ))).await;
+                                        error!(
+                                            "Failed to put_record for new keyword index '{}': {}",
+                                            pending_update.keyword, e
+                                        );
+                                        let _ = event_tx
+                                            .send(DhtEvent::Error(format!(
+                                                "Failed to create keyword index: {}",
+                                                e
+                                            )))
+                                            .await;
                                     }
                                 }
                             }
@@ -2895,9 +2975,12 @@ async fn handle_kademlia_event(
                     if key_str.starts_with("idx:") {
                         let keyword = key_str.strip_prefix("idx:").unwrap_or("unknown");
                         info!("Successfully stored keyword index for '{}'", keyword);
-                        let _ = event_tx.send(DhtEvent::Info(format!(
-                            "Keyword index stored: '{}'", keyword
-                        ))).await;
+                        let _ = event_tx
+                            .send(DhtEvent::Info(format!(
+                                "Keyword index stored: '{}'",
+                                keyword
+                            )))
+                            .await;
                     } else {
                         debug!("PutRecord succeeded for key: {:?}", key);
                     }
@@ -3084,7 +3167,9 @@ async fn handle_identify_event(
             if info.protocols.iter().any(|p| p.as_ref() == hop_proto) {
                 info!("🛰️ Relay HOP is advertised by this node (server enabled).");
             } else {
-                warn!("🛰️ Relay HOP is NOT advertised. Check enable_relay_server and cargo features.");
+                warn!(
+                    "🛰️ Relay HOP is NOT advertised. Check enable_relay_server and cargo features."
+                );
             }
             let listen_addrs = info.listen_addrs.clone();
 
@@ -3093,19 +3178,34 @@ async fn handle_identify_event(
                 info!("  📍 Peer {} listen addr: {}", peer_id, addr);
 
                 if ma_plausibly_reachable(addr) {
-                    swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, addr.clone());
                 } else {
-                    debug!("⏭️ Ignoring unreachable listen addr from {}: {}", peer_id, addr);
+                    debug!(
+                        "⏭️ Ignoring unreachable listen addr from {}: {}",
+                        peer_id, addr
+                    );
                 }
 
                 // Relay Setting: from candidate's "public base", create /p2p-circuit
                 if enable_autorelay && is_relay_candidate(&peer_id, relay_candidates) {
-                    if let Some(base_str) = relay_candidates.iter().find(|s| s.contains(&peer_id.to_string())) {
+                    if let Some(base_str) = relay_candidates
+                        .iter()
+                        .find(|s| s.contains(&peer_id.to_string()))
+                    {
                         if let Ok(base) = base_str.parse::<Multiaddr>() {
                             if let Some(relay_addr) = build_relay_listen_addr(&base) {
-                                info!("📡 Attempting to listen via relay {} at {}", peer_id, relay_addr);
+                                info!(
+                                    "📡 Attempting to listen via relay {} at {}",
+                                    peer_id, relay_addr
+                                );
                                 if let Err(e) = swarm.listen_on(relay_addr.clone()) {
-                                    warn!("Failed to listen on relay address {}: {}", relay_addr, e);
+                                    warn!(
+                                        "Failed to listen on relay address {}: {}",
+                                        relay_addr, e
+                                    );
                                 } else {
                                     info!("📡 Attempting to listen via relay peer {}", peer_id);
                                 }
@@ -3160,7 +3260,10 @@ async fn handle_mdns_event(
                         .kademlia
                         .add_address(&peer_id, multiaddr.clone());
                 } else {
-                    debug!("⏭️  mDNS discovered (ignored unreachable): {} @ {}", peer_id, multiaddr);
+                    debug!(
+                        "⏭️  mDNS discovered (ignored unreachable): {} @ {}",
+                        peer_id, multiaddr
+                    );
                 }
                 discovered
                     .entry(peer_id)
@@ -3467,18 +3570,23 @@ pub fn build_transport_with_relay(
     };
 
     // --- Direct TCP path ---
-    let tcp_base: Boxed<Box<dyn AsyncIo>> = tcp::tokio::Transport::new(
-        tcp::Config::default().nodelay(true),
-    )
-    .map(|s, _| -> Box<dyn AsyncIo> { Box::new(s.0.compat()) })
-    .boxed();
+    let tcp_base: Boxed<Box<dyn AsyncIo>> =
+        tcp::tokio::Transport::new(tcp::Config::default().nodelay(true))
+            .map(|s, _| -> Box<dyn AsyncIo> { Box::new(s.0.compat()) })
+            .boxed();
 
     // --- SOCKS5 path (optional) ---
     let direct_tcp_muxed: Boxed<(PeerId, StreamMuxerBox)> = match proxy_address {
         Some(proxy) => {
-            info!("SOCKS5 enabled. Routing all P2P TCP dialing traffic via {}", proxy);
+            info!(
+                "SOCKS5 enabled. Routing all P2P TCP dialing traffic via {}",
+                proxy
+            );
             let proxy_addr: SocketAddr = proxy.parse().map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid proxy address: {}", e))
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Invalid proxy address: {}", e),
+                )
             })?;
             let socks5: Boxed<Box<dyn AsyncIo>> = Socks5Transport::new(proxy_addr).boxed();
             into_muxed(socks5)
@@ -3813,7 +3921,6 @@ impl DhtService {
         let total_bootstrap_nodes = bootstrap_nodes.len();
         for bootstrap_addr in &bootstrap_nodes {
             if let Ok(addr) = bootstrap_addr.parse::<Multiaddr>() {
-
                 // WAN Mode: skip unroutable bootstrap addresses
                 let wan_mode = enable_autonat || enable_autorelay;
                 if !ma_plausibly_reachable(&addr) {
@@ -3996,27 +4103,38 @@ impl DhtService {
         &self,
         file_name: String,
     ) -> Result<Vec<FileMetadata>, String> {
-        info!("🔍 Backend: Starting search for file versions with name: {}", file_name);
-        
+        info!(
+            "🔍 Backend: Starting search for file versions with name: {}",
+            file_name
+        );
+
         let all = self.get_all_file_metadata().await?;
         info!("📁 Backend: Retrieved {} total files from cache", all.len());
-        
+
         let mut versions: Vec<FileMetadata> = all
             .into_iter()
             .filter(|m| m.file_name == file_name) // Remove is_root filter - get all versions
             .collect();
-        
-        info!("🎯 Backend: Found {} versions matching name '{}'", versions.len(), file_name);
-        
+
+        info!(
+            "🎯 Backend: Found {} versions matching name '{}'",
+            versions.len(),
+            file_name
+        );
+
         versions.sort_by(|a, b| b.version.unwrap_or(1).cmp(&a.version.unwrap_or(1)));
-        
+
         // Clear seeders to avoid network calls during search
         // The seeders will be populated when the user actually tries to download
         for version in &mut versions {
             version.seeders = vec![]; // Clear seeders to prevent network calls
         }
-        
-        info!("✅ Backend: Returning {} versions for '{}' (seeders cleared)", versions.len(), file_name);
+
+        info!(
+            "✅ Backend: Returning {} versions for '{}' (seeders cleared)",
+            versions.len(),
+            file_name
+        );
         Ok(versions)
     }
 
@@ -4088,9 +4206,13 @@ impl DhtService {
 
     /// Search for files by keyword in DHT indices
     /// Returns a list of merkle roots (file hashes) that match the keyword
-    pub async fn search_by_keyword(&self, keyword: String, timeout_ms: u64) -> Result<Vec<String>, String> {
+    pub async fn search_by_keyword(
+        &self,
+        keyword: String,
+        timeout_ms: u64,
+    ) -> Result<Vec<String>, String> {
         let (tx, rx) = oneshot::channel();
-        
+
         self.cmd_tx
             .send(DhtCommand::SearchByKeyword {
                 keyword: keyword.clone(),
@@ -4098,26 +4220,44 @@ impl DhtService {
             })
             .await
             .map_err(|e| format!("Failed to send search command: {}", e))?;
-        
+
         // Wait for response with timeout
         let timeout_duration = Duration::from_millis(timeout_ms);
         match tokio::time::timeout(timeout_duration, rx).await {
+            // timeout succeeded: outer Ok contains the result of `rx.await`
             Ok(recv_result) => {
-                // Channel received successfully, now check DHT result
                 match recv_result {
-                    Ok(merkle_roots) => {
-                        info!("Keyword search for '{}' returned {} results", keyword, merkle_roots.len());
-                        Ok(merkle_roots)
-                    }
-                    Err(e) => {
-                        warn!("Keyword search for '{}' failed: {}", keyword, e);
-                        Err(e)
+                    // oneshot receiver succeeded and returned an inner Result<Vec<String>, String>
+                    Ok(inner_res) => match inner_res {
+                        Ok(merkle_roots) => {
+                            info!(
+                                "Keyword search for '{}' returned {} results",
+                                keyword,
+                                merkle_roots.len()
+                            );
+                            Ok(merkle_roots)
+                        }
+                        Err(e) => {
+                            warn!("Keyword search for '{}' failed: {}", keyword, e);
+                            Err(e)
+                        }
+                    },
+                    // oneshot receiver failed (sender dropped); convert RecvError to String
+                    Err(recv_err) => {
+                        warn!(
+                            "Keyword search oneshot receive error for '{}': {}",
+                            keyword, recv_err
+                        );
+                        Err(recv_err.to_string())
                     }
                 }
             }
             Err(_) => {
                 // Timeout elapsed
-                warn!("Keyword search for '{}' timed out after {}ms", keyword, timeout_ms);
+                warn!(
+                    "Keyword search for '{}' timed out after {}ms",
+                    keyword, timeout_ms
+                );
                 Err(format!("Keyword search timed out after {}ms", timeout_ms))
             }
         }
@@ -4911,11 +5051,7 @@ fn extract_multiaddr_from_error_str(s: &str) -> Option<Multiaddr> {
     None
 }
 
-
-async fn record_identify_push_metrics(
-    metrics: &Arc<Mutex<DhtMetrics>>,
-    info: &identify::Info,
-) {
+async fn record_identify_push_metrics(metrics: &Arc<Mutex<DhtMetrics>>, info: &identify::Info) {
     if let Ok(mut metrics_guard) = metrics.try_lock() {
         for addr in &info.listen_addrs {
             metrics_guard.record_listen_addr(addr);
@@ -4967,11 +5103,11 @@ mod tests {
         assert!(keywords.contains(&"test".to_string()));
         assert!(keywords.contains(&"document".to_string()));
         assert!(keywords.contains(&"2024".to_string()));
-        
+
         // Test deduplication
         let keywords = extract_keywords("test-test-file.txt");
         assert_eq!(keywords.iter().filter(|k| *k == "test").count(), 1);
-        
+
         // Test short words are filtered
         let keywords = extract_keywords("a-b-cd-test.txt");
         assert!(!keywords.contains(&"a".to_string()));
@@ -4988,38 +5124,35 @@ mod tests {
             "hash2".to_string(),
             "hash3".to_string(),
         ];
-        
+
         // Serialize
         let serialized = serde_json::to_vec(&merkle_roots).expect("Failed to serialize");
-        
+
         // Deserialize
-        let deserialized: Vec<String> = serde_json::from_slice(&serialized)
-            .expect("Failed to deserialize");
-        
+        let deserialized: Vec<String> =
+            serde_json::from_slice(&serialized).expect("Failed to deserialize");
+
         assert_eq!(deserialized, merkle_roots);
-        
+
         // Test empty list
         let empty: Vec<String> = vec![];
         let serialized = serde_json::to_vec(&empty).expect("Failed to serialize");
-        let deserialized: Vec<String> = serde_json::from_slice(&serialized)
-            .expect("Failed to deserialize");
+        let deserialized: Vec<String> =
+            serde_json::from_slice(&serialized).expect("Failed to deserialize");
         assert_eq!(deserialized.len(), 0);
     }
 
     #[test]
     fn test_keyword_index_deduplication() {
         // Test that we can deduplicate merkle roots in an index
-        let mut merkle_roots = vec![
-            "hash1".to_string(),
-            "hash2".to_string(),
-        ];
-        
+        let mut merkle_roots = vec!["hash1".to_string(), "hash2".to_string()];
+
         let new_root = "hash3".to_string();
         if !merkle_roots.contains(&new_root) {
             merkle_roots.push(new_root);
         }
         assert_eq!(merkle_roots.len(), 3);
-        
+
         // Try to add duplicate
         let duplicate_root = "hash2".to_string();
         if !merkle_roots.contains(&duplicate_root) {
@@ -5035,7 +5168,7 @@ mod tests {
         let index_key_str = format!("idx:{}", keyword);
         assert_eq!(index_key_str, "idx:test");
         assert!(index_key_str.starts_with("idx:"));
-        
+
         // Test that we can extract the keyword
         let extracted = index_key_str.strip_prefix("idx:").unwrap();
         assert_eq!(extracted, keyword);
@@ -5048,14 +5181,14 @@ mod tests {
         let index_key_str = format!("idx:{}", keyword);
         let index_key = kad::RecordKey::new(&index_key_str.as_bytes());
         let merkle_root = "abc123def456".to_string();
-        
+
         let pending = PendingIndexUpdate {
             keyword: keyword.clone(),
             index_key: index_key.clone(),
             new_merkle_root: merkle_root.clone(),
             timestamp: std::time::Instant::now(),
         };
-        
+
         assert_eq!(pending.keyword, keyword);
         assert_eq!(pending.new_merkle_root, merkle_root);
         assert_eq!(pending.index_key.as_ref(), index_key_str.as_bytes());
@@ -5065,14 +5198,12 @@ mod tests {
     fn test_size_limit_check() {
         // Test that we can detect when an index exceeds size limits
         const MAX_RECORD_SIZE: usize = 2048;
-        
+
         // Create a list that's within limits
-        let small_list: Vec<String> = (0..10)
-            .map(|i| format!("merkle_root_{}", i))
-            .collect();
+        let small_list: Vec<String> = (0..10).map(|i| format!("merkle_root_{}", i)).collect();
         let serialized = serde_json::to_vec(&small_list).unwrap();
         assert!(serialized.len() < MAX_RECORD_SIZE);
-        
+
         // Create a list that exceeds limits
         let large_list: Vec<String> = (0..200)
             .map(|i| format!("very_long_merkle_root_hash_string_{}", i))
