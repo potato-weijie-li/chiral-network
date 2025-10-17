@@ -16,13 +16,13 @@ use rs_merkle::{Hasher, MerkleTree};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tracing::{debug, error, info, warn, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::peer_selection::{PeerMetrics, PeerSelectionService, SelectionStrategy};
 use crate::webrtc_service::{get_webrtc_service, FileChunk};
@@ -61,10 +61,9 @@ use libp2p::{
     mdns::{tokio::Behaviour as Mdns, Event as MdnsEvent},
     noise,
     ping::{self, Behaviour as Ping, Event as PingEvent},
-    relay, request_response as rr,
+    quic, relay, request_response as rr,
     swarm::{behaviour::toggle, NetworkBehaviour, SwarmEvent},
-    tcp, Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder,
-    quic, yamux
+    tcp, yamux, Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder,
 };
 use rand::rngs::OsRng;
 const EXPECTED_PROTOCOL_VERSION: &str = "/chiral/1.0.0";
@@ -215,6 +214,10 @@ pub enum DhtCommand {
     StoreBlock {
         cid: Cid,
         data: Vec<u8>,
+    },
+    SearchByKeyword {
+        keyword: String,
+        sender: oneshot::Sender<Result<Vec<String>, String>>,
     },
 }
 
@@ -465,6 +468,20 @@ struct PendingSearch {
 struct PendingProviderQuery {
     id: u64,
     sender: oneshot::Sender<Result<Vec<String>, String>>,
+}
+
+#[derive(Debug)]
+struct PendingKeywordSearch {
+    keyword: String,
+    sender: oneshot::Sender<Result<Vec<String>, String>>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingIndexUpdate {
+    keyword: String,
+    index_key: kad::RecordKey,
+    new_merkle_root: String,
+    timestamp: std::time::Instant,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -850,7 +867,7 @@ fn should_try_relay(
     true
 }
 
-/// candidates(HashSet<String>) → (PeerId, Multiaddr) 
+/// candidates(HashSet<String>) → (PeerId, Multiaddr)
 fn filter_relay_candidates(
     relay_candidates: &HashSet<String>,
     blacklist: &HashSet<PeerId>,
@@ -873,7 +890,11 @@ fn filter_relay_candidates(
                 if !blacklist.contains(&pid) {
                     if let Some(until) = cooldown.get(&pid) {
                         if Instant::now() < *until {
-                            tracing::debug!("skip cooldown relay candidate {} until {:?}", pid, until);
+                            tracing::debug!(
+                                "skip cooldown relay candidate {} until {:?}",
+                                pid,
+                                until
+                            );
                             continue;
                         }
                     }
@@ -886,7 +907,6 @@ fn filter_relay_candidates(
     }
     out
 }
-
 
 fn extract_relay_peer(address: &Multiaddr) -> Option<PeerId> {
     use libp2p::multiaddr::Protocol;
@@ -1201,6 +1221,7 @@ async fn run_dht_node(
     root_query_mapping: Arc<Mutex<HashMap<beetswap::QueryId, FileMetadata>>>,
     active_downloads: Arc<Mutex<HashMap<String, ActiveDownload>>>,
     get_providers_queries: Arc<Mutex<HashMap<kad::QueryId, (String, std::time::Instant)>>>,
+    get_record_queries: Arc<Mutex<HashMap<kad::QueryId, PendingIndexUpdate>>>,
     is_bootstrap: bool,
     enable_autorelay: bool,
     relay_candidates: HashSet<String>,
@@ -1282,7 +1303,10 @@ async fn run_dht_node(
     let mut last_tried_relay: Option<PeerId> = None;
 
     #[derive(Debug, Clone, Copy)]
-    enum RelayErrClass { Permanent, Transient }
+    enum RelayErrClass {
+        Permanent,
+        Transient,
+    }
 
     fn classify_err_str(s: &str) -> RelayErrClass {
         if s.contains("Reservation(Unsupported)") || s.contains("Denied") {
@@ -1346,7 +1370,8 @@ async fn run_dht_node(
     }
 
     // First attempt: filter candidates + try listen_on /p2p-circuit
-    let filtered_relays = filter_relay_candidates(&relay_candidates, &relay_blacklist, &relay_cooldown);
+    let filtered_relays =
+        filter_relay_candidates(&relay_candidates, &relay_blacklist, &relay_cooldown);
     if filtered_relays.is_empty() {
         tracing::warn!("No usable relay candidates after blacklist/cooldown filtering");
     } else {
@@ -1371,6 +1396,27 @@ async fn run_dht_node(
             _= dht_maintenance_interval.tick() => {
                 info!("Triggering periodic DHT maintenanace: Kademlia bootstrap and Record Refresh.");
                 let _ = swarm.behaviour_mut().kademlia.bootstrap();
+
+                // Cleanup timed-out get_record queries for keyword indices
+                let now = std::time::Instant::now();
+                const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+                let mut timed_out_queries = Vec::new();
+                {
+                    let queries = get_record_queries.lock().await;
+                    for (query_id, pending) in queries.iter() {
+                        if now.duration_since(pending.timestamp) > QUERY_TIMEOUT {
+                            timed_out_queries.push((*query_id, pending.keyword.clone()));
+                        }
+                    }
+                }
+
+                for (query_id, keyword) in timed_out_queries {
+                    warn!("Keyword index query timed out for '{}', removing from pending", keyword);
+                    get_record_queries.lock().await.remove(&query_id);
+                    let _ = event_tx.send(DhtEvent::Warning(format!(
+                        "Keyword index query timed out: '{}'", keyword
+                    ))).await;
+                }
             }
             cmd = cmd_rx.recv() => {
                 match cmd {
@@ -1511,20 +1557,26 @@ async fn run_dht_node(
                             metadata.file_name,
                             keywords
                         );
-                        // Task 2: DHT Indexing
-                        // TODO: implement the "read-modify-write" logic inside this loop.
+                        // Task 2: DHT Indexing - implement read-modify-write logic
                         for keyword in keywords {
                             let index_key_str = format!("idx:{}", keyword);
-                            let _index_key = kad::RecordKey::new(&index_key_str);
+                            let index_key = kad::RecordKey::new(&index_key_str.as_bytes());
 
-                            // TODO:
-                            // 1. Call swarm.behaviour_mut().kademlia.get_record(index_key.clone())
-                            // 2. In the KademliaEvent handler for GetRecordOk, deserialize the value (a list of hashes).
-                            // 3. Add the new metadata.merkle_root to the list.
-                            // 4. Serialize the updated list.
-                            // 5. Create a new Record and call swarm.behaviour_mut().kademlia.put_record(...).
-                            
-                            info!("TODO - Register keyword '{}' with file hash '{}'", keyword, metadata.merkle_root);
+                            // Step 1: Initiate read with get_record
+                            let query_id = swarm.behaviour_mut().kademlia.get_record(index_key.clone());
+                            info!(
+                                "Initiating get_record for keyword '{}' (query_id: {:?})",
+                                keyword, query_id
+                            );
+
+                            // Step 2: Track the query for async handling
+                            let pending_update = PendingIndexUpdate {
+                                keyword: keyword.clone(),
+                                index_key: index_key.clone(),
+                                new_merkle_root: metadata.merkle_root.clone(),
+                                timestamp: std::time::Instant::now(),
+                            };
+                            get_record_queries.lock().await.insert(query_id, pending_update);
                         }
                         let _ = event_tx.send(DhtEvent::PublishedFile(metadata)).await;
                     }
@@ -1871,6 +1923,24 @@ async fn run_dht_node(
                             }
                         }
                     }
+                    Some(DhtCommand::SearchByKeyword { keyword, sender }) => {
+                        // Search for files by keyword in DHT index
+                        let index_key_str = format!("idx:{}", keyword.to_lowercase());
+                        let index_key = kad::RecordKey::new(&index_key_str.as_bytes());
+                        let query_id = swarm.behaviour_mut().kademlia.get_record(index_key.clone());
+
+                        info!("Searching keyword index '{}' (query_id: {:?})", keyword, query_id);
+
+                        // Track this search query
+                        let pending_search = PendingKeywordSearch {
+                            keyword: keyword.clone(),
+                            sender,
+                        };
+                        pending_provider_queries.lock().await.insert(index_key_str, PendingProviderQuery {
+                            id: 0,
+                            sender: pending_search.sender,
+                        });
+                    }
                     None => {
                         info!("DHT command channel closed; shutting down node task");
                         break 'outer;
@@ -1884,11 +1954,13 @@ async fn run_dht_node(
                         handle_kademlia_event(
                             kad_event,
                             &mut swarm,
+                            peer_id,
                             &connected_peers,
                             &event_tx,
                             &pending_searches,
                             &pending_provider_queries,
                             &get_providers_queries,
+                            &get_record_queries,
                         )
                         .await;
                     }
@@ -2487,8 +2559,8 @@ async fn run_dht_node(
 }
 
 fn extract_bootstrap_peer_ids(bootstrap_nodes: &[String]) -> HashSet<PeerId> {
-    use libp2p::{Multiaddr, PeerId};
     use libp2p::multiaddr::Protocol;
+    use libp2p::{Multiaddr, PeerId};
 
     bootstrap_nodes
         .iter()
@@ -2497,7 +2569,9 @@ fn extract_bootstrap_peer_ids(bootstrap_nodes: &[String]) -> HashSet<PeerId> {
             ma.iter().find_map(|p| {
                 if let Protocol::P2p(mh) = p {
                     PeerId::from_multihash(mh.into()).ok()
-                } else { None }
+                } else {
+                    None
+                }
             })
         })
         .collect()
@@ -2506,11 +2580,13 @@ fn extract_bootstrap_peer_ids(bootstrap_nodes: &[String]) -> HashSet<PeerId> {
 async fn handle_kademlia_event(
     event: KademliaEvent,
     swarm: &mut Swarm<DhtBehaviour>,
+    peer_id: PeerId,
     connected_peers: &Arc<Mutex<HashSet<PeerId>>>,
     event_tx: &mpsc::Sender<DhtEvent>,
     pending_searches: &Arc<Mutex<HashMap<String, Vec<PendingSearch>>>>,
     pending_provider_queries: &Arc<Mutex<HashMap<String, PendingProviderQuery>>>,
     get_providers_queries: &Arc<Mutex<HashMap<kad::QueryId, (String, std::time::Instant)>>>,
+    get_record_queries: &Arc<Mutex<HashMap<kad::QueryId, PendingIndexUpdate>>>,
 ) {
     match event {
         KademliaEvent::RoutingUpdated { peer, .. } => {
@@ -2519,11 +2595,17 @@ async fn handle_kademlia_event(
         KademliaEvent::UnroutablePeer { peer } => {
             warn!("Peer {} is unroutable", peer);
         }
-        KademliaEvent::RoutablePeer { peer, address,  .. } => {
+        KademliaEvent::RoutablePeer { peer, address, .. } => {
             debug!("Peer {} became routable", peer);
             if !ma_plausibly_reachable(&address) {
-                swarm.behaviour_mut().kademlia.remove_address(&peer, &address);
-                debug!("⏭️ Kad RoutablePeer ignored (unreachable): {} -> {}", peer, address);
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .remove_address(&peer, &address);
+                debug!(
+                    "⏭️ Kad RoutablePeer ignored (unreachable): {} -> {}",
+                    peer, address
+                );
             } else {
                 debug!("✅ Kad RoutablePeer accepted: {} -> {}", peer, address);
             }
@@ -2532,87 +2614,245 @@ async fn handle_kademlia_event(
             match result {
                 QueryResult::GetRecord(Ok(ok)) => match ok {
                     GetRecordOk::FoundRecord(peer_record) => {
-                        // Try to parse DHT record as essential metadata JSON
-                        if let Ok(metadata_json) =
-                            serde_json::from_slice::<serde_json::Value>(&peer_record.record.value)
-                        {
-                            // Construct FileMetadata from the JSON
-                            if let (
-                                Some(file_hash),
-                                Some(file_name),
-                                Some(file_size),
-                                Some(created_at),
-                            ) = (
-                                // Use merkle_root as the primary identifier
-                                metadata_json.get("merkle_root").and_then(|v| v.as_str()),
-                                metadata_json.get("file_name").and_then(|v| v.as_str()),
-                                metadata_json.get("file_size").and_then(|v| v.as_u64()),
-                                metadata_json.get("created_at").and_then(|v| v.as_u64()),
-                            ) {
-                                let metadata = FileMetadata {
-                                    merkle_root: file_hash.to_string(),
-                                    file_name: file_name.to_string(),
-                                    file_size,
-                                    file_data: Vec::new(), // Will be populated during download
-                                    seeders: vec![peer_record
-                                        .peer
-                                        .map(|p| p.to_string())
-                                        .unwrap_or_default()],
-                                    created_at,
-                                    mime_type: metadata_json
-                                        .get("mime_type")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string()),
-                                    is_encrypted: metadata_json
-                                        .get("is_encrypted")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false),
-                                    encryption_method: metadata_json
-                                        .get("encryption_method")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string()),
-                                    key_fingerprint: metadata_json
-                                        .get("key_fingerprint")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string()),
-                                    version: metadata_json
-                                        .get("version")
-                                        .and_then(|v| v.as_u64())
-                                        .map(|v| v as u32),
-                                    parent_hash: metadata_json
-                                        .get("parent_hash")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string()),
-                                    cids: metadata_json.get("cids").and_then(|v| {
-                                        serde_json::from_value::<Option<Vec<Cid>>>(v.clone())
-                                            .unwrap_or(None)
-                                    }),
-                                    is_root: metadata_json
-                                        .get("is_root")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(true),
-                                };
+                        // Check if this is a keyword index query
+                        let key_bytes = peer_record.record.key.as_ref();
+                        let key_str = String::from_utf8_lossy(key_bytes);
 
-                                let notify_metadata = metadata.clone();
-                                let file_hash = notify_metadata.merkle_root.clone();
+                        // Determine if this is an index query (starts with "idx:")
+                        if key_str.starts_with("idx:") {
+                            // First, check if this is a keyword SEARCH query
+                            let key_str_owned = key_str.to_string();
+                            if let Some(pending_query) =
+                                pending_provider_queries.lock().await.remove(&key_str_owned)
+                            {
+                                // This is a keyword search query - return the list of merkle roots
+                                info!("Processing keyword search for '{}'", key_str);
+
+                                // Deserialize the index (JSON array of merkle roots)
+                                let merkle_roots: Vec<String> =
+                                    match serde_json::from_slice(&peer_record.record.value) {
+                                        Ok(list) => list,
+                                        Err(e) => {
+                                            warn!(
+                                                "Failed to deserialize keyword index for '{}': {}",
+                                                key_str, e
+                                            );
+                                            let _ = pending_query.sender.send(Err(format!(
+                                                "Failed to parse keyword index: {}",
+                                                e
+                                            )));
+                                            return;
+                                        }
+                                    };
+
                                 info!(
-                                    "File discovered: {} ({})",
-                                    notify_metadata.file_name, file_hash
+                                    "Found {} files for keyword '{}'",
+                                    merkle_roots.len(),
+                                    key_str
                                 );
-                                let _ = event_tx.send(DhtEvent::FileDiscovered(metadata)).await;
+                                let _ = pending_query.sender.send(Ok(merkle_roots));
+                                return;
+                            }
 
-                                // only for synchronous_search_metadata
-                                notify_pending_searches(
-                                    pending_searches,
-                                    &file_hash,
-                                    SearchResponse::Found(notify_metadata),
-                                )
-                                .await;
-                            } else {
-                                debug!("DHT record missing required fields");
+                            // Otherwise, this is a keyword index UPDATE query
+                            if let Some(query_id) = get_record_queries
+                                .lock()
+                                .await
+                                .keys()
+                                .find(|_| {
+                                    // Match by comparing the key in PendingIndexUpdate
+                                    get_record_queries
+                                        .blocking_lock()
+                                        .iter()
+                                        .any(|(_, pending)| pending.index_key.as_ref() == key_bytes)
+                                })
+                                .copied()
+                            {
+                                if let Some(pending_update) =
+                                    get_record_queries.lock().await.remove(&query_id)
+                                {
+                                    info!(
+                                        "Processing keyword index update for '{}' with merkle_root '{}'",
+                                        pending_update.keyword, pending_update.new_merkle_root
+                                    );
+
+                                    // Deserialize existing index (JSON array of strings)
+                                    let mut merkle_roots: Vec<String> = match serde_json::from_slice(
+                                        &peer_record.record.value,
+                                    ) {
+                                        Ok(list) => list,
+                                        Err(e) => {
+                                            warn!("Failed to deserialize keyword index for '{}': {}. Creating new index.", pending_update.keyword, e);
+                                            Vec::new()
+                                        }
+                                    };
+
+                                    // Add new merkle_root if not already present (deduplication)
+                                    if !merkle_roots.contains(&pending_update.new_merkle_root) {
+                                        merkle_roots.push(pending_update.new_merkle_root.clone());
+                                        info!(
+                                            "Added merkle_root '{}' to index for keyword '{}' (total: {})",
+                                            pending_update.new_merkle_root, pending_update.keyword, merkle_roots.len()
+                                        );
+                                    } else {
+                                        info!(
+                                            "Merkle_root '{}' already exists in index for keyword '{}'",
+                                            pending_update.new_merkle_root, pending_update.keyword
+                                        );
+                                    }
+
+                                    // Serialize updated list
+                                    let serialized = match serde_json::to_vec(&merkle_roots) {
+                                        Ok(data) => data,
+                                        Err(e) => {
+                                            error!("Failed to serialize updated index for keyword '{}': {}", pending_update.keyword, e);
+                                            let _ = event_tx
+                                                .send(DhtEvent::Error(format!(
+                                                    "Failed to serialize keyword index: {}",
+                                                    e
+                                                )))
+                                                .await;
+                                            return;
+                                        }
+                                    };
+
+                                    // Check size limit (Kademlia typically has ~1KB-2KB limits)
+                                    const MAX_RECORD_SIZE: usize = 2048;
+                                    if serialized.len() > MAX_RECORD_SIZE {
+                                        error!(
+                                            "Keyword index for '{}' exceeds size limit: {} bytes (max: {})",
+                                            pending_update.keyword, serialized.len(), MAX_RECORD_SIZE
+                                        );
+                                        let _ = event_tx
+                                            .send(DhtEvent::Error(format!(
+                                                "Keyword index too large: {} bytes",
+                                                serialized.len()
+                                            )))
+                                            .await;
+                                        return;
+                                    }
+
+                                    // Create and publish updated record
+                                    let record = Record {
+                                        key: pending_update.index_key.clone(),
+                                        value: serialized,
+                                        publisher: Some(peer_id),
+                                        expires: None,
+                                    };
+
+                                    match swarm
+                                        .behaviour_mut()
+                                        .kademlia
+                                        .put_record(record, kad::Quorum::One)
+                                    {
+                                        Ok(_) => {
+                                            info!("Successfully initiated put_record for keyword '{}'", pending_update.keyword);
+                                            let _ = event_tx
+                                                .send(DhtEvent::Info(format!(
+                                                    "Updated keyword index: '{}'",
+                                                    pending_update.keyword
+                                                )))
+                                                .await;
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                "Failed to put_record for keyword '{}': {}",
+                                                pending_update.keyword, e
+                                            );
+                                            let _ = event_tx
+                                                .send(DhtEvent::Error(format!(
+                                                    "Failed to update keyword index: {}",
+                                                    e
+                                                )))
+                                                .await;
+                                        }
+                                    }
+                                }
                             }
                         } else {
-                            debug!("Received non-JSON DHT record");
+                            // This is a file metadata query - existing logic
+                            // Try to parse DHT record as essential metadata JSON
+                            if let Ok(metadata_json) = serde_json::from_slice::<serde_json::Value>(
+                                &peer_record.record.value,
+                            ) {
+                                // Construct FileMetadata from the JSON
+                                if let (
+                                    Some(file_hash),
+                                    Some(file_name),
+                                    Some(file_size),
+                                    Some(created_at),
+                                ) = (
+                                    // Use merkle_root as the primary identifier
+                                    metadata_json.get("merkle_root").and_then(|v| v.as_str()),
+                                    metadata_json.get("file_name").and_then(|v| v.as_str()),
+                                    metadata_json.get("file_size").and_then(|v| v.as_u64()),
+                                    metadata_json.get("created_at").and_then(|v| v.as_u64()),
+                                ) {
+                                    let metadata = FileMetadata {
+                                        merkle_root: file_hash.to_string(),
+                                        file_name: file_name.to_string(),
+                                        file_size,
+                                        file_data: Vec::new(), // Will be populated during download
+                                        seeders: vec![peer_record
+                                            .peer
+                                            .map(|p| p.to_string())
+                                            .unwrap_or_default()],
+                                        created_at,
+                                        mime_type: metadata_json
+                                            .get("mime_type")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string()),
+                                        is_encrypted: metadata_json
+                                            .get("is_encrypted")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false),
+                                        encryption_method: metadata_json
+                                            .get("encryption_method")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string()),
+                                        key_fingerprint: metadata_json
+                                            .get("key_fingerprint")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string()),
+                                        version: metadata_json
+                                            .get("version")
+                                            .and_then(|v| v.as_u64())
+                                            .map(|v| v as u32),
+                                        parent_hash: metadata_json
+                                            .get("parent_hash")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string()),
+                                        cids: metadata_json.get("cids").and_then(|v| {
+                                            serde_json::from_value::<Option<Vec<Cid>>>(v.clone())
+                                                .unwrap_or(None)
+                                        }),
+                                        is_root: metadata_json
+                                            .get("is_root")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(true),
+                                    };
+
+                                    let notify_metadata = metadata.clone();
+                                    let file_hash = notify_metadata.merkle_root.clone();
+                                    info!(
+                                        "File discovered: {} ({})",
+                                        notify_metadata.file_name, file_hash
+                                    );
+                                    let _ = event_tx.send(DhtEvent::FileDiscovered(metadata)).await;
+
+                                    // only for synchronous_search_metadata
+                                    notify_pending_searches(
+                                        pending_searches,
+                                        &file_hash,
+                                        SearchResponse::Found(notify_metadata),
+                                    )
+                                    .await;
+                                } else {
+                                    debug!("DHT record missing required fields");
+                                }
+                            } else {
+                                debug!("Received non-JSON DHT record");
+                            }
                         }
                     }
                     GetRecordOk::FinishedWithNoAdditionalRecord { .. } => {
@@ -2621,22 +2861,129 @@ async fn handle_kademlia_event(
                 },
                 QueryResult::GetRecord(Err(err)) => {
                     warn!("GetRecord error: {:?}", err);
-                    // If the error includes the key, emit FileNotFound
-                    if let kad::GetRecordError::NotFound { key, .. } = err {
-                        let file_hash = String::from_utf8_lossy(key.as_ref()).to_string();
-                        let _ = event_tx
-                            .send(DhtEvent::FileNotFound(file_hash.clone()))
+
+                    // Check if this is a keyword index query that failed
+                    if let kad::GetRecordError::NotFound { key, .. } = &err {
+                        let key_str = String::from_utf8_lossy(key.as_ref());
+
+                        if key_str.starts_with("idx:") {
+                            // First check if this is a keyword SEARCH query
+                            let key_str_owned = key_str.to_string();
+                            if let Some(pending_query) =
+                                pending_provider_queries.lock().await.remove(&key_str_owned)
+                            {
+                                // Keyword search found no results
+                                info!("Keyword '{}' not found in DHT (no files indexed)", key_str);
+                                let _ = pending_query.sender.send(Ok(vec![])); // Return empty list
+                                return;
+                            }
+
+                            // Otherwise, this is a keyword index UPDATE query that found no existing record
+                            // Find and remove the pending query, then create a new index
+                            let pending_opt = {
+                                let mut queries = get_record_queries.lock().await;
+                                queries
+                                    .iter()
+                                    .find(|(_, pending)| pending.index_key.as_ref() == key.as_ref())
+                                    .map(|(qid, _)| *qid)
+                                    .and_then(|qid| queries.remove(&qid))
+                            };
+
+                            if let Some(pending_update) = pending_opt {
+                                info!(
+                                    "Keyword index not found for '{}', creating new index with merkle_root '{}'",
+                                    pending_update.keyword, pending_update.new_merkle_root
+                                );
+
+                                // Create new index with single merkle_root
+                                let merkle_roots = vec![pending_update.new_merkle_root.clone()];
+
+                                // Serialize the new list
+                                let serialized = match serde_json::to_vec(&merkle_roots) {
+                                    Ok(data) => data,
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to serialize new index for keyword '{}': {}",
+                                            pending_update.keyword, e
+                                        );
+                                        let _ = event_tx
+                                            .send(DhtEvent::Error(format!(
+                                                "Failed to serialize keyword index: {}",
+                                                e
+                                            )))
+                                            .await;
+                                        return;
+                                    }
+                                };
+
+                                // Create and publish new record
+                                let record = Record {
+                                    key: pending_update.index_key.clone(),
+                                    value: serialized,
+                                    publisher: Some(peer_id),
+                                    expires: None,
+                                };
+
+                                match swarm
+                                    .behaviour_mut()
+                                    .kademlia
+                                    .put_record(record, kad::Quorum::One)
+                                {
+                                    Ok(_) => {
+                                        info!(
+                                            "Successfully created new keyword index for '{}'",
+                                            pending_update.keyword
+                                        );
+                                        let _ = event_tx
+                                            .send(DhtEvent::Info(format!(
+                                                "Created keyword index: '{}'",
+                                                pending_update.keyword
+                                            )))
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to put_record for new keyword index '{}': {}",
+                                            pending_update.keyword, e
+                                        );
+                                        let _ = event_tx
+                                            .send(DhtEvent::Error(format!(
+                                                "Failed to create keyword index: {}",
+                                                e
+                                            )))
+                                            .await;
+                                    }
+                                }
+                            }
+                        } else {
+                            // This is a file metadata query that failed
+                            let file_hash = String::from_utf8_lossy(key.as_ref()).to_string();
+                            let _ = event_tx
+                                .send(DhtEvent::FileNotFound(file_hash.clone()))
+                                .await;
+                            notify_pending_searches(
+                                pending_searches,
+                                &file_hash,
+                                SearchResponse::NotFound,
+                            )
                             .await;
-                        notify_pending_searches(
-                            pending_searches,
-                            &file_hash,
-                            SearchResponse::NotFound,
-                        )
-                        .await;
+                        }
                     }
                 }
                 QueryResult::PutRecord(Ok(PutRecordOk { key })) => {
-                    debug!("PutRecord succeeded for key: {:?}", key);
+                    let key_str = String::from_utf8_lossy(key.as_ref());
+                    if key_str.starts_with("idx:") {
+                        let keyword = key_str.strip_prefix("idx:").unwrap_or("unknown");
+                        info!("Successfully stored keyword index for '{}'", keyword);
+                        let _ = event_tx
+                            .send(DhtEvent::Info(format!(
+                                "Keyword index stored: '{}'",
+                                keyword
+                            )))
+                            .await;
+                    } else {
+                        debug!("PutRecord succeeded for key: {:?}", key);
+                    }
                 }
                 QueryResult::PutRecord(Err(err)) => {
                     warn!("PutRecord error: {:?}", err);
@@ -2820,7 +3167,9 @@ async fn handle_identify_event(
             if info.protocols.iter().any(|p| p.as_ref() == hop_proto) {
                 info!("🛰️ Relay HOP is advertised by this node (server enabled).");
             } else {
-                warn!("🛰️ Relay HOP is NOT advertised. Check enable_relay_server and cargo features.");
+                warn!(
+                    "🛰️ Relay HOP is NOT advertised. Check enable_relay_server and cargo features."
+                );
             }
             let listen_addrs = info.listen_addrs.clone();
 
@@ -2829,19 +3178,34 @@ async fn handle_identify_event(
                 info!("  📍 Peer {} listen addr: {}", peer_id, addr);
 
                 if ma_plausibly_reachable(addr) {
-                    swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, addr.clone());
                 } else {
-                    debug!("⏭️ Ignoring unreachable listen addr from {}: {}", peer_id, addr);
+                    debug!(
+                        "⏭️ Ignoring unreachable listen addr from {}: {}",
+                        peer_id, addr
+                    );
                 }
 
                 // Relay Setting: from candidate's "public base", create /p2p-circuit
                 if enable_autorelay && is_relay_candidate(&peer_id, relay_candidates) {
-                    if let Some(base_str) = relay_candidates.iter().find(|s| s.contains(&peer_id.to_string())) {
+                    if let Some(base_str) = relay_candidates
+                        .iter()
+                        .find(|s| s.contains(&peer_id.to_string()))
+                    {
                         if let Ok(base) = base_str.parse::<Multiaddr>() {
                             if let Some(relay_addr) = build_relay_listen_addr(&base) {
-                                info!("📡 Attempting to listen via relay {} at {}", peer_id, relay_addr);
+                                info!(
+                                    "📡 Attempting to listen via relay {} at {}",
+                                    peer_id, relay_addr
+                                );
                                 if let Err(e) = swarm.listen_on(relay_addr.clone()) {
-                                    warn!("Failed to listen on relay address {}: {}", relay_addr, e);
+                                    warn!(
+                                        "Failed to listen on relay address {}: {}",
+                                        relay_addr, e
+                                    );
                                 } else {
                                     info!("📡 Attempting to listen via relay peer {}", peer_id);
                                 }
@@ -2896,7 +3260,10 @@ async fn handle_mdns_event(
                         .kademlia
                         .add_address(&peer_id, multiaddr.clone());
                 } else {
-                    debug!("⏭️  mDNS discovered (ignored unreachable): {} @ {}", peer_id, multiaddr);
+                    debug!(
+                        "⏭️  mDNS discovered (ignored unreachable): {} @ {}",
+                        peer_id, multiaddr
+                    );
                 }
                 discovered
                     .entry(peer_id)
@@ -3203,18 +3570,23 @@ pub fn build_transport_with_relay(
     };
 
     // --- Direct TCP path ---
-    let tcp_base: Boxed<Box<dyn AsyncIo>> = tcp::tokio::Transport::new(
-        tcp::Config::default().nodelay(true),
-    )
-    .map(|s, _| -> Box<dyn AsyncIo> { Box::new(s.0.compat()) })
-    .boxed();
+    let tcp_base: Boxed<Box<dyn AsyncIo>> =
+        tcp::tokio::Transport::new(tcp::Config::default().nodelay(true))
+            .map(|s, _| -> Box<dyn AsyncIo> { Box::new(s.0.compat()) })
+            .boxed();
 
     // --- SOCKS5 path (optional) ---
     let direct_tcp_muxed: Boxed<(PeerId, StreamMuxerBox)> = match proxy_address {
         Some(proxy) => {
-            info!("SOCKS5 enabled. Routing all P2P TCP dialing traffic via {}", proxy);
+            info!(
+                "SOCKS5 enabled. Routing all P2P TCP dialing traffic via {}",
+                proxy
+            );
             let proxy_addr: SocketAddr = proxy.parse().map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid proxy address: {}", e))
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Invalid proxy address: {}", e),
+                )
             })?;
             let socks5: Boxed<Box<dyn AsyncIo>> = Socks5Transport::new(proxy_addr).boxed();
             into_muxed(socks5)
@@ -3549,7 +3921,6 @@ impl DhtService {
         let total_bootstrap_nodes = bootstrap_nodes.len();
         for bootstrap_addr in &bootstrap_nodes {
             if let Ok(addr) = bootstrap_addr.parse::<Multiaddr>() {
-
                 // WAN Mode: skip unroutable bootstrap addresses
                 let wan_mode = enable_autonat || enable_autorelay;
                 if !ma_plausibly_reachable(&addr) {
@@ -3631,6 +4002,8 @@ impl DhtService {
         let get_providers_queries_local: Arc<
             Mutex<HashMap<kad::QueryId, (String, std::time::Instant)>>,
         > = Arc::new(Mutex::new(HashMap::new()));
+        let get_record_queries_local: Arc<Mutex<HashMap<kad::QueryId, PendingIndexUpdate>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         {
             let mut guard = metrics.lock().await;
@@ -3661,6 +4034,7 @@ impl DhtService {
             root_query_mapping.clone(),
             active_downloads.clone(),
             get_providers_queries_local.clone(),
+            get_record_queries_local.clone(),
             is_bootstrap,
             final_enable_autorelay,
             relay_candidates,
@@ -3729,27 +4103,103 @@ impl DhtService {
         &self,
         file_name: String,
     ) -> Result<Vec<FileMetadata>, String> {
-        info!("🔍 Backend: Starting search for file versions with name: {}", file_name);
-        
+        info!(
+            "🔍 Backend: Starting search for file versions with name: {}",
+            file_name
+        );
+
+        // Step 1: Search local cache first
         let all = self.get_all_file_metadata().await?;
         info!("📁 Backend: Retrieved {} total files from cache", all.len());
-        
+
         let mut versions: Vec<FileMetadata> = all
             .into_iter()
-            .filter(|m| m.file_name == file_name) // Remove is_root filter - get all versions
+            .filter(|m| m.file_name == file_name) // Exact match on filename
+            .collect();
+
+        info!(
+            "🎯 Backend: Found {} local versions matching name '{}'",
+            versions.len(),
+            file_name
+        );
+
+        // Step 2: Search DHT keyword indices for additional results
+        // Extract keywords from the search query (filename)
+        let keywords = extract_keywords(&file_name);
+        info!("🔑 Backend: Extracted {} keywords from '{}': {:?}", keywords.len(), file_name, keywords);
+        
+        // Search DHT for each keyword with reduced timeout to fit in frontend's 2s limit
+        // Use shorter timeout per keyword so total time stays under 2 seconds
+        let mut dht_hashes: Vec<String> = Vec::new();
+        for keyword in keywords {
+            info!("🔍 Backend: Searching DHT for keyword: '{}'", keyword);
+            // Use very short timeout (800ms) to ensure we finish within 2s even with multiple keywords
+            match self.search_by_keyword(keyword.clone(), 800).await {
+                Ok(hashes) => {
+                    info!("✅ Backend: Found {} hashes for keyword '{}'", hashes.len(), keyword);
+                    dht_hashes.extend(hashes);
+                }
+                Err(e) => {
+                    warn!("⚠️ Backend: Failed to search keyword '{}': {}", keyword, e);
+                    // Continue with next keyword instead of failing completely
+                }
+            }
+        }
+        
+        // Deduplicate hashes
+        dht_hashes.sort();
+        dht_hashes.dedup();
+        info!("📊 Backend: Total unique hashes from DHT: {}", dht_hashes.len());
+        
+        // Step 3: Fetch metadata for DHT results and filter by exact filename match
+        // Limit the number of hashes we try to fetch to stay within time budget
+        let hashes_to_fetch: Vec<String> = dht_hashes.into_iter()
+            .filter(|hash| !versions.iter().any(|v| &v.merkle_root == hash))
+            .take(5) // Limit to 5 hashes to keep total time reasonable
             .collect();
         
-        info!("🎯 Backend: Found {} versions matching name '{}'", versions.len(), file_name);
+        if !hashes_to_fetch.is_empty() {
+            info!("📡 Backend: Will fetch metadata for {} hashes", hashes_to_fetch.len());
+            
+            // Initiate all metadata fetches
+            for hash in &hashes_to_fetch {
+                if let Err(e) = self.search_file(hash.clone()).await {
+                    warn!("⚠️ Backend: Failed to initiate fetch for {}: {}", hash, e);
+                }
+            }
+            
+            // Wait briefly for metadata to arrive (reduced from 100ms per hash to 50ms total)
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            
+            // Check cache for all hashes at once
+            if let Ok(all_cached) = self.get_all_file_metadata().await {
+                for metadata in all_cached.into_iter() {
+                    if hashes_to_fetch.contains(&metadata.merkle_root) && metadata.file_name == file_name {
+                        info!("✅ Backend: Retrieved metadata from cache for {}", metadata.merkle_root);
+                        versions.push(metadata);
+                    }
+                }
+            }
+        }
         
+        info!(
+            "🎯 Backend: Total versions after DHT search: {} (local + DHT)",
+            versions.len()
+        );
+
         versions.sort_by(|a, b| b.version.unwrap_or(1).cmp(&a.version.unwrap_or(1)));
-        
+
         // Clear seeders to avoid network calls during search
         // The seeders will be populated when the user actually tries to download
         for version in &mut versions {
             version.seeders = vec![]; // Clear seeders to prevent network calls
         }
-        
-        info!("✅ Backend: Returning {} versions for '{}' (seeders cleared)", versions.len(), file_name);
+
+        info!(
+            "✅ Backend: Returning {} versions for '{}' (seeders cleared)",
+            versions.len(),
+            file_name
+        );
         Ok(versions)
     }
 
@@ -3817,6 +4267,65 @@ impl DhtService {
             .send(DhtCommand::SearchFile(file_hash))
             .await
             .map_err(|e| e.to_string())
+    }
+
+    /// Search for files by keyword in DHT indices
+    /// Returns a list of merkle roots (file hashes) that match the keyword
+    pub async fn search_by_keyword(
+        &self,
+        keyword: String,
+        timeout_ms: u64,
+    ) -> Result<Vec<String>, String> {
+        let (tx, rx) = oneshot::channel();
+
+        self.cmd_tx
+            .send(DhtCommand::SearchByKeyword {
+                keyword: keyword.clone(),
+                sender: tx,
+            })
+            .await
+            .map_err(|e| format!("Failed to send search command: {}", e))?;
+
+        // Wait for response with timeout
+        let timeout_duration = Duration::from_millis(timeout_ms);
+        match tokio::time::timeout(timeout_duration, rx).await {
+            // timeout succeeded: outer Ok contains the result of `rx.await`
+            Ok(recv_result) => {
+                match recv_result {
+                    // oneshot receiver succeeded and returned an inner Result<Vec<String>, String>
+                    Ok(inner_res) => match inner_res {
+                        Ok(merkle_roots) => {
+                            info!(
+                                "Keyword search for '{}' returned {} results",
+                                keyword,
+                                merkle_roots.len()
+                            );
+                            Ok(merkle_roots)
+                        }
+                        Err(e) => {
+                            warn!("Keyword search for '{}' failed: {}", keyword, e);
+                            Err(e)
+                        }
+                    },
+                    // oneshot receiver failed (sender dropped); convert RecvError to String
+                    Err(recv_err) => {
+                        warn!(
+                            "Keyword search oneshot receive error for '{}': {}",
+                            keyword, recv_err
+                        );
+                        Err(recv_err.to_string())
+                    }
+                }
+            }
+            Err(_) => {
+                // Timeout elapsed
+                warn!(
+                    "Keyword search for '{}' timed out after {}ms",
+                    keyword, timeout_ms
+                );
+                Err(format!("Keyword search timed out after {}ms", timeout_ms))
+            }
+        }
     }
 
     pub async fn get_file(&self, file_hash: String) -> Result<(), String> {
@@ -4607,11 +5116,7 @@ fn extract_multiaddr_from_error_str(s: &str) -> Option<Multiaddr> {
     None
 }
 
-
-async fn record_identify_push_metrics(
-    metrics: &Arc<Mutex<DhtMetrics>>,
-    info: &identify::Info,
-) {
+async fn record_identify_push_metrics(metrics: &Arc<Mutex<DhtMetrics>>, info: &identify::Info) {
     if let Ok(mut metrics_guard) = metrics.try_lock() {
         for addr in &info.listen_addrs {
             metrics_guard.record_listen_addr(addr);
@@ -4649,6 +5154,128 @@ pub fn split_into_blocks(bytes: &[u8], chunk_size: usize) -> Vec<ByteBlock> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extract_keywords() {
+        // Test basic keyword extraction
+        let keywords = extract_keywords("my-file-name.txt");
+        assert!(keywords.contains(&"file".to_string()));
+        assert!(keywords.contains(&"name".to_string()));
+        assert_eq!(keywords.len(), 2); // "my" is too short (< 3 chars)
+
+        // Test with underscores and dots
+        let keywords = extract_keywords("test_document_2024.pdf");
+        assert!(keywords.contains(&"test".to_string()));
+        assert!(keywords.contains(&"document".to_string()));
+        assert!(keywords.contains(&"2024".to_string()));
+
+        // Test deduplication
+        let keywords = extract_keywords("test-test-file.txt");
+        assert_eq!(keywords.iter().filter(|k| *k == "test").count(), 1);
+
+        // Test short words are filtered
+        let keywords = extract_keywords("a-b-cd-test.txt");
+        assert!(!keywords.contains(&"a".to_string()));
+        assert!(!keywords.contains(&"b".to_string()));
+        assert!(!keywords.contains(&"cd".to_string()));
+        assert!(keywords.contains(&"test".to_string()));
+    }
+
+    #[test]
+    fn test_keyword_index_serialization() {
+        // Test that we can serialize and deserialize a keyword index
+        let merkle_roots = vec![
+            "hash1".to_string(),
+            "hash2".to_string(),
+            "hash3".to_string(),
+        ];
+
+        // Serialize
+        let serialized = serde_json::to_vec(&merkle_roots).expect("Failed to serialize");
+
+        // Deserialize
+        let deserialized: Vec<String> =
+            serde_json::from_slice(&serialized).expect("Failed to deserialize");
+
+        assert_eq!(deserialized, merkle_roots);
+
+        // Test empty list
+        let empty: Vec<String> = vec![];
+        let serialized = serde_json::to_vec(&empty).expect("Failed to serialize");
+        let deserialized: Vec<String> =
+            serde_json::from_slice(&serialized).expect("Failed to deserialize");
+        assert_eq!(deserialized.len(), 0);
+    }
+
+    #[test]
+    fn test_keyword_index_deduplication() {
+        // Test that we can deduplicate merkle roots in an index
+        let mut merkle_roots = vec!["hash1".to_string(), "hash2".to_string()];
+
+        let new_root = "hash3".to_string();
+        if !merkle_roots.contains(&new_root) {
+            merkle_roots.push(new_root);
+        }
+        assert_eq!(merkle_roots.len(), 3);
+
+        // Try to add duplicate
+        let duplicate_root = "hash2".to_string();
+        if !merkle_roots.contains(&duplicate_root) {
+            merkle_roots.push(duplicate_root);
+        }
+        assert_eq!(merkle_roots.len(), 3); // Should still be 3
+    }
+
+    #[test]
+    fn test_keyword_index_key_format() {
+        // Test that keyword index keys follow the "idx:{keyword}" format
+        let keyword = "test";
+        let index_key_str = format!("idx:{}", keyword);
+        assert_eq!(index_key_str, "idx:test");
+        assert!(index_key_str.starts_with("idx:"));
+
+        // Test that we can extract the keyword
+        let extracted = index_key_str.strip_prefix("idx:").unwrap();
+        assert_eq!(extracted, keyword);
+    }
+
+    #[test]
+    fn test_pending_index_update_creation() {
+        // Test that we can create a PendingIndexUpdate
+        let keyword = "document".to_string();
+        let index_key_str = format!("idx:{}", keyword);
+        let index_key = kad::RecordKey::new(&index_key_str.as_bytes());
+        let merkle_root = "abc123def456".to_string();
+
+        let pending = PendingIndexUpdate {
+            keyword: keyword.clone(),
+            index_key: index_key.clone(),
+            new_merkle_root: merkle_root.clone(),
+            timestamp: std::time::Instant::now(),
+        };
+
+        assert_eq!(pending.keyword, keyword);
+        assert_eq!(pending.new_merkle_root, merkle_root);
+        assert_eq!(pending.index_key.as_ref(), index_key_str.as_bytes());
+    }
+
+    #[test]
+    fn test_size_limit_check() {
+        // Test that we can detect when an index exceeds size limits
+        const MAX_RECORD_SIZE: usize = 2048;
+
+        // Create a list that's within limits
+        let small_list: Vec<String> = (0..10).map(|i| format!("merkle_root_{}", i)).collect();
+        let serialized = serde_json::to_vec(&small_list).unwrap();
+        assert!(serialized.len() < MAX_RECORD_SIZE);
+
+        // Create a list that exceeds limits
+        let large_list: Vec<String> = (0..200)
+            .map(|i| format!("very_long_merkle_root_hash_string_{}", i))
+            .collect();
+        let serialized = serde_json::to_vec(&large_list).unwrap();
+        assert!(serialized.len() > MAX_RECORD_SIZE);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_command_stops_dht_service() {
@@ -4727,7 +5354,7 @@ mod tests {
             observed_addr: "/ip4/127.0.0.1/tcp/4001".parse().unwrap(),
         };
 
-        record_identify_push_metrics(&metrics, &info);
+        record_identify_push_metrics(&metrics, &info).await;
 
         {
             let guard = metrics.lock().await;
@@ -4736,7 +5363,7 @@ mod tests {
             assert!(guard.listen_addrs.contains(&secondary_addr.to_string()));
         }
 
-        record_identify_push_metrics(&metrics, &info);
+        record_identify_push_metrics(&metrics, &info).await;
 
         let guard = metrics.lock().await;
         assert_eq!(guard.listen_addrs.len(), 2);

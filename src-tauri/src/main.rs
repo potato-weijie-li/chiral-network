@@ -420,6 +420,30 @@ async fn test_backend_connection(state: State<'_, AppState>) -> Result<String, S
 }
 
 #[tauri::command]
+async fn search_files_by_keyword(
+    state: State<'_, AppState>,
+    keyword: String,
+    timeout_ms: Option<u64>,
+) -> Result<Vec<String>, String> {
+    info!("🔍 Tauri command: search_files_by_keyword called with keyword: '{}', timeout: {:?}ms", keyword, timeout_ms);
+    
+    let dht = { state.dht.lock().await.as_ref().cloned() };
+    if let Some(dht) = dht {
+        info!("✅ DHT service found, calling search_by_keyword");
+        let timeout = timeout_ms.unwrap_or(5000); // Default 5 second timeout
+        let result = (*dht).search_by_keyword(keyword.clone(), timeout).await;
+        match &result {
+            Ok(hashes) => info!("🎉 Keyword search '{}' returned {} file hashes", keyword, hashes.len()),
+            Err(e) => info!("❌ Keyword search '{}' error: {}", keyword, e),
+        }
+        result
+    } else {
+        info!("❌ DHT not running");
+        Err("DHT not running".into())
+    }
+}
+
+#[tauri::command]
 async fn establish_webrtc_connection(
     state: State<'_, AppState>,
     peer_id: String,
@@ -3641,6 +3665,7 @@ fn main() {
             upload_versioned_file,
             get_file_versions_by_name,
             test_backend_connection,
+            search_files_by_keyword,
             establish_webrtc_connection,
             send_webrtc_file_request,
             get_webrtc_connection_status,
