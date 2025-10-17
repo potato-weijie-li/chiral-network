@@ -4108,18 +4108,74 @@ impl DhtService {
             file_name
         );
 
+        // Step 1: Search local cache first
         let all = self.get_all_file_metadata().await?;
         info!("📁 Backend: Retrieved {} total files from cache", all.len());
 
         let mut versions: Vec<FileMetadata> = all
             .into_iter()
-            .filter(|m| m.file_name == file_name) // Remove is_root filter - get all versions
+            .filter(|m| m.file_name == file_name) // Exact match on filename
             .collect();
 
         info!(
-            "🎯 Backend: Found {} versions matching name '{}'",
+            "🎯 Backend: Found {} local versions matching name '{}'",
             versions.len(),
             file_name
+        );
+
+        // Step 2: Search DHT keyword indices for additional results
+        // Extract keywords from the search query (filename)
+        let keywords = extract_keywords(&file_name);
+        info!("🔑 Backend: Extracted {} keywords from '{}': {:?}", keywords.len(), file_name, keywords);
+        
+        // Search DHT for each keyword
+        let mut dht_hashes: Vec<String> = Vec::new();
+        for keyword in keywords {
+            info!("🔍 Backend: Searching DHT for keyword: '{}'", keyword);
+            match self.search_by_keyword(keyword.clone(), 3000).await {
+                Ok(hashes) => {
+                    info!("✅ Backend: Found {} hashes for keyword '{}'", hashes.len(), keyword);
+                    dht_hashes.extend(hashes);
+                }
+                Err(e) => {
+                    warn!("⚠️ Backend: Failed to search keyword '{}': {}", keyword, e);
+                }
+            }
+        }
+        
+        // Deduplicate hashes
+        dht_hashes.sort();
+        dht_hashes.dedup();
+        info!("📊 Backend: Total unique hashes from DHT: {}", dht_hashes.len());
+        
+        // Step 3: Fetch metadata for DHT results and filter by exact filename match
+        for hash in dht_hashes {
+            // Skip if we already have this hash in local results
+            if versions.iter().any(|v| v.merkle_root == hash) {
+                continue;
+            }
+            
+            // Fetch metadata from DHT
+            info!("📡 Backend: Fetching metadata for hash: {}", hash);
+            if let Err(e) = self.search_file(hash.clone()).await {
+                warn!("⚠️ Backend: Failed to fetch metadata for {}: {}", hash, e);
+            }
+            
+            // Wait a bit for the metadata to be received and cached
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            
+            // Try to get it from cache now
+            if let Ok(all_cached) = self.get_all_file_metadata().await {
+                if let Some(metadata) = all_cached.into_iter().find(|m| m.merkle_root == hash && m.file_name == file_name) {
+                    info!("✅ Backend: Retrieved metadata from cache for {}", hash);
+                    versions.push(metadata);
+                }
+            }
+        }
+        
+        info!(
+            "🎯 Backend: Total versions after DHT search: {} (local + DHT)",
+            versions.len()
         );
 
         versions.sort_by(|a, b| b.version.unwrap_or(1).cmp(&a.version.unwrap_or(1)));
