@@ -1,3 +1,8 @@
+// Note: This file requires hardhat to be installed for deployment
+// Install with: npm install --save-dev hardhat @nomicfoundation/hardhat-toolbox
+// Uncomment the code below once hardhat is installed
+
+/*
 import { ethers } from "hardhat";
 
 async function main() {
@@ -23,3 +28,4 @@ main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
+*/
