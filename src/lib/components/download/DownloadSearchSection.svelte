@@ -124,7 +124,12 @@
   async function searchForFile() {
     const trimmed = searchHash.trim();
     if (!trimmed) {
-      pushMessage(searchMode === 'hash' ? tr('download.notifications.enterHash') : 'Please enter a file name', 'warning');
+      pushMessage(
+        searchMode === 'merkle_hash' ? tr('download.notifications.enterHash') : 
+        searchMode === 'cid' ? 'Please enter a CID' :
+        'Please enter a file name', 
+        'warning'
+      );
       return;
     }
 
@@ -305,7 +310,7 @@
       latestStatus = 'error';
       searchError = message;
 
-      if (searchMode === 'hash' && activeHistoryId) {
+      if (searchMode === 'merkle_hash' && activeHistoryId) {
         dhtSearchHistory.updateEntry(activeHistoryId, {
           status: 'error',
           errorMessage: message,
@@ -580,6 +585,7 @@
         <select bind:value={searchMode} class="px-3 py-1 text-sm rounded-md border transition-colors bg-muted/50 hover:bg-muted border-border">
             <option value="merkle_hash">Search by Merkle Hash</option>
             <option value="cid">Search by CID</option>
+            <option value="name">Search by Name</option>
         </select>
       </div>
 
@@ -588,7 +594,7 @@
           <Input
             id="hash-input"
             bind:value={searchHash}
-            placeholder={searchMode === 'merkle_hash' ? 'Enter Merkle Hash...' : 'Enter CID...'}
+            placeholder={searchMode === 'merkle_hash' ? 'Enter Merkle Hash...' : searchMode === 'cid' ? 'Enter CID...' : 'Enter file name...'}
             class="pr-20 h-10"
             on:focus={toggleHistoryDropdown}
           />
