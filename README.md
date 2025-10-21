@@ -58,6 +58,21 @@ We welcome contributions! Please read our [Contributing Guide](docs/contributing
 
 See our [Roadmap](docs/roadmap.md) for planned features and development phases.
 
+### Doc-First Development
+
+For new features (excluding minor fixes, bug fixes, or GUI changes), we follow a **doc-first model**:
+
+1. **Create a Proposal** in [docs/proposals/](docs/proposals/) explaining:
+   - What the feature is
+   - Why it's necessary
+   - How it aligns with core principles
+   - Implementation plan
+2. **Get Approval** from maintainers
+3. **Implement** the feature
+4. **Document** the implementation
+
+See [Feature Proposals README](docs/proposals/README.md) for details.
+
 ## 🐛 Troubleshooting
 
 ### Common Issues

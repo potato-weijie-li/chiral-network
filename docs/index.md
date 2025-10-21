@@ -31,6 +31,9 @@ Welcome to the Chiral Network documentation. This directory contains comprehensi
 - [Contributing Guide](contributing.md) - How to contribute to Chiral Network
 - [Roadmap](roadmap.md) - Project roadmap and future development plans
 
+### Development Process
+- [Feature Proposals](proposals/README.md) - Doc-first feature proposal process and active proposals
+
 ### Special Topics
 - [Proxy Self-Test](PROXY_SELF_TEST.md) - Proxy functionality testing guide
 
