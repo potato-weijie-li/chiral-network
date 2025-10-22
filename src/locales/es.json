@@ -678,6 +678,13 @@
       "searchFailed": "Búsqueda fallida: {error}",
       "downloadFailed": "Descarga fallida: {name}",
       "downloadCompleted": "Descarga completada: {name}"
+    },
+    "validation": {
+      "required": "Por favor ingrese un hash de archivo",
+      "mustStartWith0x": "El hash debe comenzar con 0x",
+      "invalidLength": "El hash debe tener exactamente 66 caracteres",
+      "invalidCharacters": "El hash contiene caracteres inválidos",
+      "invalid": "Formato de hash inválido"
     }
   }
 }

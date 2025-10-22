@@ -685,6 +685,13 @@
       "searchFailed": "搜索失败：{error}",
       "downloadFailed": "下载失败：{name}",
       "downloadCompleted": "下载完成：{name}"
+    },
+    "validation": {
+      "required": "请输入文件哈希值",
+      "mustStartWith0x": "哈希值必须以0x开头",
+      "invalidLength": "哈希值必须恰好为66个字符",
+      "invalidCharacters": "哈希值包含无效字符",
+      "invalid": "无效的哈希格式"
     }
   }
 }

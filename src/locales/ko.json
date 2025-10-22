@@ -693,6 +693,13 @@
       "searchFailed": "검색 실패: {error}",
       "downloadFailed": "다운로드 실패: {name}",
       "downloadCompleted": "다운로드 완료: {name}"
+    },
+    "validation": {
+      "required": "파일 해시를 입력해주세요",
+      "mustStartWith0x": "해시는 0x로 시작해야 합니다",
+      "invalidLength": "해시는 정확히 66자여야 합니다",
+      "invalidCharacters": "해시에 유효하지 않은 문자가 포함되어 있습니다",
+      "invalid": "유효하지 않은 해시 형식"
     }
   }
 }

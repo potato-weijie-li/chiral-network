@@ -27,6 +27,10 @@
   // Add notification related variables
   let currentNotification: HTMLElement | null = null
 
+  // Add hash validation related variables
+  let hashWarning = '';
+  let isHashValid = false;
+
   // Show notification function
   function showNotification(message: string, type: 'success' | 'error' | 'info' | 'warning' = 'success', duration = 4000) {
     // Remove existing notification
@@ -321,6 +325,11 @@
   
   // New search function that only searches without downloading
   async function searchForFile() {
+    const validation = validateHash(searchHash);
+    if (!validation.isValid) {
+      showNotification(validation.warning || tr('download.validation.invalid'), 'warning');
+      return;
+    }
     if (!searchHash) {
       showNotification(tr('download.notifications.enterHash'), 'warning')
       return
@@ -769,6 +778,27 @@ function clearSearch() {
     if (bytes < 1024) return bytes + ' B'
     if (bytes < 1048576) return (bytes / 1024).toFixed(2) + ' KB'
     return (bytes / 1048576).toFixed(2) + ' MB'
+  }
+
+  // hash validation function
+  function validateHash(hash: string): { isValid: boolean; warning?: string } {
+    if (!hash) {
+      return { isValid: false, warning: tr('download.validation.required') };
+    }
+    
+    if (!hash.startsWith('0x')) {
+      return { isValid: false, warning: tr('download.validation.mustStartWith0x') };
+    }
+    
+    if (hash.length !== 66) {
+      return { isValid: false, warning: tr('download.validation.invalidLength') };
+    }
+    
+    if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) {
+      return { isValid: false, warning: tr('download.validation.invalidCharacters') };
+    }
+    
+    return { isValid: true };
   }
 
 
