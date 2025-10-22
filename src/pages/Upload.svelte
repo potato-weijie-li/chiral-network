@@ -343,7 +343,11 @@
     try {
       console.log(`🔍 Testing DHT search for merkle root: ${lastUploadHash}`)
       console.log(`📊 Hash length: ${lastUploadHash.length} characters`)
-      const result = await dhtService.searchFileMetadata(lastUploadHash)
+      
+      // Use longer timeout (30 seconds) for cross-instance DHT discovery
+      // Fresh instances need time to bootstrap and query the DHT network
+      console.log(`⏳ Searching DHT (timeout: 30s - allows time for peer discovery)...`)
+      const result = await dhtService.searchFileMetadata(lastUploadHash, 30_000)
       
       // Convert single result to array format for display
       if (result) {
@@ -357,8 +361,8 @@
         const seeders = result.seeders?.length || 1
         showToast(`✅ DHT Discovery Test PASSED! File is discoverable (${seeders} seeder(s))`, 'success')
       } else {
-        console.log(`⏳ File not yet discoverable on DHT. It may take a few seconds to propagate to the network.`)
-        showToast('File not yet discoverable (may need 5-10 seconds to propagate through DHT)', 'warning')
+        console.log(`⏳ File not yet discoverable on DHT. May need 15-30 seconds for cross-instance discovery.`)
+        showToast('File not yet discoverable. Cross-instance discovery may take 15-30 seconds. Try waiting longer.', 'warning')
       }
     } catch (error) {
       console.error('Error searching for uploaded file:', error)

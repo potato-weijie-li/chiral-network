@@ -400,7 +400,7 @@ export class DhtService {
 
   async searchFileMetadata(
     fileHash: string,
-    timeoutMs = 10_000
+    timeoutMs = 30_000
   ): Promise<FileMetadata | null> {
     const trimmed = fileHash.trim();
     if (!trimmed) {
