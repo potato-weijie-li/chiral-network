@@ -6,7 +6,7 @@
   import { loadSeedList, saveSeedList, type SeedRecord } from '$lib/services/seedPersistence'
   import { t } from 'svelte-i18n';
   import { get } from 'svelte/store'
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { showToast } from '$lib/toast'
   import { getStorageStatus } from '$lib/uploadHelpers'
   import { fileService } from '$lib/services/fileService'
@@ -19,6 +19,220 @@
 
   const tr = (k: string, params?: Record<string, any>): string => (get(t) as (key: string, params?: any) => string)(k, params)// Check if running in Tauri environment
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+  // Svelte action for drag-drop handler - automatically attaches when element mounts
+  function setupDragDrop(element: HTMLElement) {
+    console.log(`✅ setupDragDrop action mounted on element`);
+
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      e.dataTransfer!.dropEffect = 'copy'
+      isDragging = true
+    }
+
+    const handleDragEnter = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      e.dataTransfer!.dropEffect = 'copy'
+      isDragging = true
+    }
+
+    const handleDragLeave = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.currentTarget && !element.contains(e.relatedTarget as Node)) {
+        isDragging = false
+      }
+    }
+
+    const handleDragEnd = (_e: DragEvent) => {
+      isDragging = false
+    }
+
+    const handleDrop = async (e: DragEvent) => {
+      console.log(`🚀 handleDrop triggered via action`);
+      e.preventDefault()
+      e.stopPropagation()
+      isDragging = false
+
+      if (!$etcAccount) {
+        console.warn(`⚠️ No account active`);
+        showToast('Please create or import an account to upload files', 'warning')
+        return
+      }
+
+      if (isUploading) {
+        showToast('Upload already in progress. Please wait for the current upload to complete.', 'warning')
+        return
+      }
+
+      const droppedFiles = Array.from(e.dataTransfer?.files || [])
+      console.log(`📁 Dropped ${droppedFiles.length} file(s)`);
+
+      if (droppedFiles.length > 0) {
+        if (!isTauri) {
+          console.warn(`⚠️ Not in Tauri environment`);
+          showToast('File upload is only available in the desktop app', 'error')
+          return
+        }
+
+        try {
+          console.log(`✅ Starting upload process for ${droppedFiles.length} file(s)`);
+          isUploading = true
+          let duplicateCount = 0
+          let addedCount = 0
+          let blockedCount = 0
+
+          for (const file of droppedFiles) {
+            const blockedExtensions = ['.exe', '.bat', '.cmd', '.com', '.msi', '.scr', '.vbs']
+            const fileName = file.name.toLowerCase()
+            if (blockedExtensions.some(ext => fileName.endsWith(ext))) {
+              showToast(`${file.name}: Executable files are not allowed for security reasons`, 'error')
+              blockedCount++
+              continue
+            }
+
+            if (file.size === 0) {
+              showToast(`${file.name}: File is empty`, 'error')
+              blockedCount++
+              continue
+            }
+
+            try{
+              let existingVersions: any[] = [];
+              try {
+                existingVersions = await invoke('get_file_versions_by_name', { fileName: file.name }) as any[];
+              } catch (versionError) {
+                console.log('No existing versions found for', file.name);
+              }
+
+              const recipientKey = useEncryptedSharing && recipientPublicKey.trim() ? recipientPublicKey.trim() : undefined;
+
+              const buffer = await file.arrayBuffer();
+              const fileData = Array.from(new Uint8Array(buffer));
+              console.log(`💾 Saving temp file for: ${file.name} (${fileData.length} bytes)`);
+              let tempFilePath: string;
+              try {
+                tempFilePath = await invoke<string>("save_temp_file_for_upload", {
+                  fileName: file.name,
+                  fileData,
+                });
+                console.log(`✅ Temp file saved to: ${tempFilePath}`);
+              } catch (tempError) {
+                console.error(`❌ Failed to save temp file:`, tempError);
+                throw tempError;
+              }
+
+              console.log(`📤 Invoking upload_and_publish_file for: ${file.name}`);
+              let result;
+              try {
+                result = await invoke<{merkleRoot: string, fileName: string, fileSize: number, isEncrypted: boolean, peerId: string, version: number}>(
+                  "upload_and_publish_file",
+                  {
+                    filePath: tempFilePath,
+                    fileName: file.name,
+                    recipientPublicKey: recipientKey
+                  }
+                );
+                console.log(`✅ Backend returned result:`, result);
+              } catch (invokeError) {
+                console.error(`❌ Invoke failed:`, invokeError);
+                throw invokeError;
+              }
+
+              if (get(files).some(f => f.hash === result.merkleRoot)) {
+                duplicateCount++
+                continue;
+              }
+
+              const isNewVersion = existingVersions.length > 0;
+              const isDhtRunning = dhtService.getPeerId() !== null;
+
+              const newFile = {
+                id: `file-${Date.now()}-${Math.random()}`,
+                name: file.name,
+                path: file.name,
+                hash: result.merkleRoot,
+                size: result.fileSize,
+                status: isDhtRunning ? ('seeding' as const) : ('uploaded' as const),
+                seeders: isDhtRunning ? 1 : 0,
+                leechers: 0,
+                uploadDate: new Date(),
+                version: result.version,
+                isNewVersion: isNewVersion,
+                isEncrypted: result.isEncrypted,
+              };
+
+              files.update((currentFiles) => [...currentFiles, newFile]);
+              addedCount++;
+              lastUploadHash = result.merkleRoot;
+              console.log(`✅ File uploaded: ${file.name} | Hash: ${result.merkleRoot} | Size: ${result.fileSize} bytes`);
+              console.log(`🔴 DEBUG: lastUploadHash is now: "${lastUploadHash}"`, { isTauri, lastUploadHash });
+            } catch (error) {
+              console.error('Error uploading dropped file:', file.name, error);
+              const fileName = file.name || 'unknown file';
+              showToast(tr('upload.fileFailed', { values: { name: fileName, error: String(error) } }), 'error');
+            }
+          }
+
+          if (duplicateCount > 0) {
+            showToast(tr('upload.duplicateSkipped', { values: { count: duplicateCount } }), 'warning')
+          }
+
+          if (addedCount > 0) {
+            const isDhtRunning = dhtService.getPeerId() !== null;
+            if (isDhtRunning) {
+              showToast('✅ Files published to DHT network for sharing!', 'success')
+              console.log('🎉 Upload complete - Files are now discoverable on the DHT network');
+              const uploadedFiles = $files.filter(f => f.status === 'seeding').slice(-addedCount);
+              uploadedFiles.forEach(f => {
+                console.log(`📄 Uploaded: ${f.name} | Hash: ${f.hash}`);
+              });
+            } else {
+              showToast('⚠️ DHT not running. Files stored locally. Go to Network tab to start DHT.', 'warning')
+              console.warn('DHT is not running. Start the DHT node in Network tab to make files discoverable.');
+            }
+            setTimeout(() => refreshAvailableStorage(), 100)
+          }
+        } catch (error) {
+          console.error('Error handling dropped files:', error)
+          showToast('Error processing dropped files. Please try again or use the "Add Files" button instead.', 'error')
+        } finally {
+          isUploading = false
+        }
+      }
+    }
+
+    const preventDefaults = (e: Event) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+
+    element.addEventListener('dragenter', handleDragEnter)
+    element.addEventListener('dragover', handleDragOver)
+    element.addEventListener('dragleave', handleDragLeave)
+    element.addEventListener('drop', handleDrop)
+
+    window.addEventListener('dragover', preventDefaults)
+    window.addEventListener('drop', preventDefaults)
+
+    document.addEventListener('dragend', handleDragEnd)
+    document.addEventListener('drop', handleDragEnd)
+
+    return {
+      destroy() {
+        element.removeEventListener('dragenter', handleDragEnter)
+        element.removeEventListener('dragover', handleDragOver)
+        element.removeEventListener('dragleave', handleDragLeave)
+        element.removeEventListener('drop', handleDrop)
+        window.removeEventListener('dragover', preventDefaults)
+        window.removeEventListener('drop', preventDefaults)
+        document.removeEventListener('dragend', handleDragEnd)
+        document.removeEventListener('drop', handleDragEnd)
+      }
+    }
+  }
 
   // Enhanced file type detection with icons
   function getFileIcon(fileName: string) {
@@ -64,6 +278,9 @@
   let storageError: string | null = null
   let lastChecked: Date | null = null
   let isUploading = false
+  let lastUploadHash: string | null = null
+  let isSearchingLastUpload = false
+  let lastUploadSearchResult: any = null
   
   // Protocol selection state
   $: selectedProtocol = $protocolStore
@@ -113,6 +330,43 @@
     : null
 
   $: showLowStorageDescription = storageStatus === 'low' && !isRefreshingStorage
+
+  async function testSearchLastUpload() {
+    if (!lastUploadHash) {
+      showToast('No file uploaded yet. Upload a file first to test DHT discovery.', 'warning')
+      return
+    }
+
+    isSearchingLastUpload = true
+    lastUploadSearchResult = null
+
+    try {
+      console.log(`🔍 Testing DHT search for merkle root: ${lastUploadHash}`)
+      console.log(`📊 Hash length: ${lastUploadHash.length} characters`)
+      const result = await dhtService.searchFileMetadata(lastUploadHash)
+      
+      // Convert single result to array format for display
+      if (result) {
+        lastUploadSearchResult = [result]
+      } else {
+        lastUploadSearchResult = []
+      }
+
+      if (result) {
+        console.log(`✅ DHT Discovery Successful! Found metadata for file:`, result)
+        const seeders = result.seeders?.length || 1
+        showToast(`✅ DHT Discovery Test PASSED! File is discoverable (${seeders} seeder(s))`, 'success')
+      } else {
+        console.log(`⏳ File not yet discoverable on DHT. It may take a few seconds to propagate to the network.`)
+        showToast('File not yet discoverable (may need 5-10 seconds to propagate through DHT)', 'warning')
+      }
+    } catch (error) {
+      console.error('Error searching for uploaded file:', error)
+      showToast(`Search error: ${String(error)}`, 'error')
+    } finally {
+      isSearchingLastUpload = false
+    }
+  }
 
   async function refreshAvailableStorage() {
     if (isRefreshingStorage) return
@@ -200,210 +454,10 @@
     } catch (e) {
       console.warn('Failed to restore persisted seed list', e)
     }
-
-    // HTML5 Drag and Drop functionality
-    const dropZone = document.querySelector('.drop-zone') as HTMLElement
-
-    if (dropZone) {
-      const handleDragOver = (e: DragEvent) => {
-        e.preventDefault()
-        e.stopPropagation()
-        e.dataTransfer!.dropEffect = 'copy'
-        isDragging = true
-      }
-
-      const handleDragEnter = (e: DragEvent) => {
-        e.preventDefault()
-        e.stopPropagation()
-        e.dataTransfer!.dropEffect = 'copy'
-        isDragging = true
-      }
-
-      const handleDragLeave = (e: DragEvent) => {
-        e.preventDefault()
-        e.stopPropagation()
-        // Only set isDragging to false if we're leaving the drop zone entirely
-        if (e.currentTarget && !dropZone.contains(e.relatedTarget as Node)) {
-          isDragging = false
-        }
-      }
-
-      // Add global drag end handler to reset dragging state
-      const handleDragEnd = (_e: DragEvent) => {
-        isDragging = false
-      }
-
-      const handleDrop = async (e: DragEvent) => {
-        e.preventDefault()
-        e.stopPropagation()
-        isDragging = false
-
-        if (!$etcAccount) {
-          showToast('Please create or import an account to upload files', 'warning')
-          return
-        }
-
-        if (isUploading) {
-          showToast('Upload already in progress. Please wait for the current upload to complete.', 'warning')
-          return
-        }
-
-        const droppedFiles = Array.from(e.dataTransfer?.files || [])
-
-        if (droppedFiles.length > 0) {
-          // Check if we're in Tauri environment
-          if (!isTauri) {
-            showToast('File upload is only available in the desktop app', 'error')
-            return
-          }
-
-          try {
-            isUploading = true
-            let duplicateCount = 0
-            let addedCount = 0
-            let blockedCount = 0
-
-            // Process each dropped file using versioned upload
-            for (const file of droppedFiles) {
-              // Block executable files for security
-              const blockedExtensions = ['.exe', '.bat', '.cmd', '.com', '.msi', '.scr', '.vbs']
-              const fileName = file.name.toLowerCase()
-              if (blockedExtensions.some(ext => fileName.endsWith(ext))) {
-                showToast(`${file.name}: Executable files are not allowed for security reasons`, 'error')
-                blockedCount++
-                continue
-              }
-
-              // Check for empty files
-              if (file.size === 0) {
-                showToast(`${file.name}: File is empty`, 'error')
-                blockedCount++
-                continue
-              }
-
-              try{
-                // Check for existing versions before upload
-                let existingVersions: any[] = [];
-                try {
-                  existingVersions = await invoke('get_file_versions_by_name', { fileName: file.name }) as any[];
-                } catch (versionError) {
-                  console.log('No existing versions found for', file.name);
-                }
-
-                // Get recipient key if encrypted sharing is enabled
-                const recipientKey = useEncryptedSharing && recipientPublicKey.trim() ? recipientPublicKey.trim() : undefined;
-
-                // UNIFIED UPLOAD: Save to temp file, then use single backend command
-                const buffer = await file.arrayBuffer();
-                const fileData = Array.from(new Uint8Array(buffer));
-                const tempFilePath = await invoke<string>("save_temp_file_for_upload", {
-                  fileName: file.name,
-                  fileData,
-                });
-
-                // Single command: chunk, encrypt, publish to DHT
-                const result = await invoke<{merkleRoot: string, fileName: string, fileSize: number, isEncrypted: boolean, peerId: string, version: number}>(
-                  "upload_and_publish_file",
-                  {
-                    filePath: tempFilePath,
-                    fileName: file.name,  // Pass original filename for DHT
-                    recipientPublicKey: recipientKey
-                  }
-                );
-
-                // Check for duplicates
-                if (get(files).some(f => f.hash === result.merkleRoot)) {
-                  duplicateCount++
-                  continue;
-                }
-
-                const isNewVersion = existingVersions.length > 0;
-                const isDhtRunning = dhtService.getPeerId() !== null;
-
-                const newFile = {
-                  id: `file-${Date.now()}-${Math.random()}`,
-                  name: file.name,  // Use original file name from drag-drop
-                  path: file.name,  // Use original file name as path for display
-                  hash: result.merkleRoot,
-                  size: result.fileSize,
-                  status: isDhtRunning ? ('seeding' as const) : ('uploaded' as const),
-                  seeders: isDhtRunning ? 1 : 0,
-                  leechers: 0,
-                  uploadDate: new Date(),
-                  version: result.version,  // Use version from backend
-                  isNewVersion: isNewVersion,
-                  isEncrypted: result.isEncrypted,
-                };
-
-                files.update((currentFiles) => [...currentFiles, newFile]);
-                addedCount++;
-              } catch (error) {
-                console.error('Error uploading dropped file:', file.name, error);
-                const fileName = file.name || 'unknown file';
-                showToast(tr('upload.fileFailed', { values: { name: fileName, error: String(error) } }), 'error');
-              }
-            }
-
-            if (duplicateCount > 0) {
-              showToast(tr('upload.duplicateSkipped', { values: { count: duplicateCount } }), 'warning')
-            }
-
-            if (addedCount > 0) {
-              const isDhtRunning = dhtService.getPeerId() !== null;
-              if (isDhtRunning) {
-                showToast('Files published to DHT network for sharing!', 'success')
-              } else {
-                showToast('Files stored locally. Start DHT network to share with others.', 'info')
-              }
-              // Make storage refresh non-blocking to prevent UI hanging
-              setTimeout(() => refreshAvailableStorage(), 100)
-            }
-          } catch (error) {
-            console.error('Error handling dropped files:', error)
-            showToast('Error processing dropped files. Please try again or use the "Add Files" button instead.', 'error')
-          } finally {
-            isUploading = false
-          }
-        }
-      }
-
-      dropZone.addEventListener('dragenter', handleDragEnter)
-      dropZone.addEventListener('dragover', handleDragOver)
-      dropZone.addEventListener('dragleave', handleDragLeave)
-      dropZone.addEventListener('drop', handleDrop)
-
-      // Prevent default browser behavior for drag and drop on the entire window
-      const preventDefaults = (e: Event) => {
-        e.preventDefault()
-        e.stopPropagation()
-      }
-
-      window.addEventListener('dragover', preventDefaults)
-      window.addEventListener('drop', preventDefaults)
-
-      // Add global drag end handlers to ensure dragging state is reset
-      document.addEventListener('dragend', handleDragEnd)
-      document.addEventListener('drop', handleDragEnd)
-
-      // Store cleanup function
-      ;(window as any).dragDropCleanup = () => {
-        dropZone.removeEventListener('dragenter', handleDragEnter)
-        dropZone.removeEventListener('dragover', handleDragOver)
-        dropZone.removeEventListener('dragleave', handleDragLeave)
-        dropZone.removeEventListener('drop', handleDrop)
-        window.removeEventListener('dragover', preventDefaults)
-        window.removeEventListener('drop', preventDefaults)
-        document.removeEventListener('dragend', handleDragEnd)
-        document.removeEventListener('drop', handleDragEnd)
-      }
-    }
   })
 
   onDestroy(() => {
-    // Cleanup drag and drop listeners
-    if ((window as any).dragDropCleanup) {
-      (window as any).dragDropCleanup()
-    }
+    // Cleanup is now handled by the Svelte action
   })
 
   // Persist seeding list when files store changes (debounced-ish)
@@ -512,7 +566,9 @@
           };
 
           files.update(f => [...f, newFile]);
+          lastUploadHash = metadata.merkleRoot || "";
           addedCount++;
+          console.log(`🔴 DEBUG: lastUploadHash set (Bitswap path): "${lastUploadHash}"`, { isTauri, lastUploadHash });
           showToast(`${fileName} uploaded as v${metadata.version} (new file)`, 'success');
 
           return { type: 'success', fileName };
@@ -564,6 +620,8 @@
           };
 
           files.update(f => [...f, newFile]);
+          lastUploadHash = result.merkleRoot;
+          console.log(`🔴 DEBUG: lastUploadHash set (WebRTC path): "${lastUploadHash}"`, { isTauri, lastUploadHash });
 
           return { type: 'success', fileName };
         } catch (error) {
@@ -753,12 +811,13 @@
   </Card>
   {/if}
 
-  <Card class="drop-zone relative p-6 transition-all duration-200 border-dashed {isDragging ? 'border-primary bg-primary/5 scale-[1.01]' : isUploading ? 'border-orange-500 bg-orange-500/5' : 'border-muted-foreground/25 hover:border-muted-foreground/50'}"
-        role="button"
-        tabindex="0"
-        aria-label="Drop zone for file uploads">
-   {#if !hasSelectedProtocol}
-    <Card>
+  <div use:setupDragDrop>
+    <Card class="drop-zone relative p-6 transition-all duration-200 border-dashed {isDragging ? 'border-primary bg-primary/5 scale-[1.01]' : isUploading ? 'border-orange-500 bg-orange-500/5' : 'border-muted-foreground/25 hover:border-muted-foreground/50'}"
+          role="button"
+          tabindex="0"
+          aria-label="Drop zone for file uploads">
+     {#if !hasSelectedProtocol}
+      <Card>
       <div class="p-6">
         <h2 class="text-2xl font-bold mb-6 text-center">{$t('upload.selectProtocol')}</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-2xl mx-auto">
@@ -1117,9 +1176,65 @@
               </div>
             {/if}
           {/if}
+
+          <!-- Test DHT Discovery Button (always visible) -->
+          {#if lastUploadHash && isTauri}
+            <div class="mt-6 flex flex-col gap-4">
+              <div class="flex gap-3">
+                <button
+                  class="flex-1 inline-flex items-center justify-center h-12 rounded-xl px-6 text-sm font-medium bg-gradient-to-r from-emerald-500 to-emerald-600 text-white hover:from-emerald-600 hover:to-emerald-700 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                  disabled={isSearchingLastUpload}
+                  on:click={testSearchLastUpload}
+                  title="Test if your last uploaded file is discoverable on the DHT network"
+                >
+                  <RefreshCw class="h-5 w-5 mr-2 {isSearchingLastUpload ? 'animate-spin' : ''}" />
+                  {isSearchingLastUpload ? 'Searching DHT...' : '🔍 Test DHT Discovery'}
+                </button>
+              </div>
+
+              <!-- DHT Discovery Test Results -->
+              {#if lastUploadSearchResult !== null}
+                <div class="p-4 rounded-lg border-2 {lastUploadSearchResult && lastUploadSearchResult.length > 0 ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/20' : 'border-amber-500 bg-amber-50 dark:bg-amber-950/20'}">
+                  {#if lastUploadSearchResult && lastUploadSearchResult.length > 0}
+                    <div class="flex items-start gap-3">
+                      <div class="text-2xl">✅</div>
+                      <div>
+                        <p class="font-semibold text-emerald-700 dark:text-emerald-300">DHT Discovery Successful!</p>
+                        <p class="text-sm text-emerald-600 dark:text-emerald-400 mt-1">
+                          Your file is discoverable on the network ({lastUploadSearchResult.length} result{lastUploadSearchResult.length !== 1 ? 's' : ''})
+                        </p>
+                        <p class="text-xs text-emerald-600 dark:text-emerald-400 mt-2">
+                          This proves the file is being shared across the DHT network and can be found by other peers.
+                        </p>
+                      </div>
+                    </div>
+                  {:else}
+                    <div class="flex items-start gap-3">
+                      <div class="text-2xl">⏳</div>
+                      <div>
+                        <p class="font-semibold text-amber-700 dark:text-amber-300">Not Yet Discoverable</p>
+                        <p class="text-sm text-amber-600 dark:text-amber-400 mt-1">
+                          File is being published but hasn't fully propagated to the DHT network yet.
+                        </p>
+                        <div class="text-xs text-amber-600 dark:text-amber-400 mt-2">
+                          <strong>What to do:</strong>
+                          <ul class="list-disc list-inside mt-1 space-y-1">
+                            <li>Wait 15-30 seconds for DHT peers to replicate</li>
+                            <li>Click "Test DHT Discovery" again</li>
+                            <li>Check Network tab to see connected DHT peers</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/if}
         </div>
       </div>
     </Card>
 {/if}
 </Card>
+  </div>
 </div>
