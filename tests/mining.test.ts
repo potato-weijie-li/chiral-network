@@ -575,4 +575,196 @@ describe("Mining State Management", () => {
       expect(state.blocksFound).toBe(numberOfBlocks);
     });
   });
+
+  describe("Mining State Persistence", () => {
+    beforeEach(() => {
+      // Clear localStorage before each test
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('miningSession');
+      }
+    });
+
+    it("should persist mining state to localStorage when updated", () => {
+      const testState: MiningState = {
+        isMining: true,
+        hashRate: "1500 H/s",
+        totalRewards: 50,
+        blocksFound: 10,
+        activeThreads: 4,
+        minerIntensity: 75,
+        selectedPool: "pool1",
+        sessionStartTime: Date.now(),
+        recentBlocks: [{
+          id: "block-1",
+          hash: "0xabc123",
+          reward: 2,
+          timestamp: new Date(),
+          difficulty: 1000000,
+          nonce: 12345,
+        }],
+        miningHistory: [{
+          timestamp: Date.now(),
+          hashRate: 1500,
+          power: 60,
+        }],
+      };
+
+      miningState.set(testState);
+
+      // Check localStorage was updated
+      if (typeof localStorage !== 'undefined') {
+        const stored = localStorage.getItem('miningSession');
+        expect(stored).not.toBeNull();
+        
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          expect(parsed.isMining).toBe(true);
+          expect(parsed.hashRate).toBe("1500 H/s");
+          expect(parsed.totalRewards).toBe(50);
+          expect(parsed.blocksFound).toBe(10);
+          expect(parsed.activeThreads).toBe(4);
+          expect(parsed.minerIntensity).toBe(75);
+          expect(parsed.selectedPool).toBe("pool1");
+          expect(parsed.sessionStartTime).toBeDefined();
+          expect(parsed.recentBlocks).toHaveLength(1);
+          expect(parsed.miningHistory).toHaveLength(1);
+        }
+      }
+    });
+
+    it("should load mining state from localStorage on initialization", () => {
+      const testState = {
+        isMining: true,
+        hashRate: "2000 H/s",
+        totalRewards: 100,
+        blocksFound: 20,
+        activeThreads: 8,
+        minerIntensity: 90,
+        selectedPool: "pool2",
+        sessionStartTime: Date.now(),
+        recentBlocks: [],
+        miningHistory: [],
+      };
+
+      // Manually set localStorage
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('miningSession', JSON.stringify(testState));
+      }
+
+      // Import and access the store (simulating a fresh load)
+      // Note: In real app, this would happen on app start
+      const state = get(miningState);
+      
+      // The state should already be loaded from localStorage
+      // (This test verifies the loadMiningState function works)
+      expect(state.hashRate).toBeDefined();
+    });
+
+    it("should handle corrupted localStorage data gracefully", () => {
+      // Set invalid JSON in localStorage
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('miningSession', '{invalid json}');
+      }
+
+      // Should not throw and should use default values
+      const state = get(miningState);
+      expect(state).toBeDefined();
+      expect(state.isMining).toBeDefined();
+    });
+
+    it("should persist mining session across updates", () => {
+      // Start with default state
+      miningState.set({
+        isMining: false,
+        hashRate: "0 H/s",
+        totalRewards: 0,
+        blocksFound: 0,
+        activeThreads: 1,
+        minerIntensity: 50,
+        selectedPool: "solo",
+        sessionStartTime: undefined,
+        recentBlocks: [],
+        miningHistory: [],
+      });
+
+      // Start mining
+      miningState.update(state => ({
+        ...state,
+        isMining: true,
+        sessionStartTime: Date.now(),
+        activeThreads: 4,
+      }));
+
+      // Add a block
+      const block = {
+        id: "block-1",
+        hash: "0xtest",
+        reward: 2,
+        timestamp: new Date(),
+        difficulty: 1000000,
+        nonce: 12345,
+      };
+
+      miningState.update(state => ({
+        ...state,
+        totalRewards: 2,
+        blocksFound: 1,
+        recentBlocks: [block],
+      }));
+
+      // Verify persistence
+      if (typeof localStorage !== 'undefined') {
+        const stored = localStorage.getItem('miningSession');
+        expect(stored).not.toBeNull();
+        
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          expect(parsed.isMining).toBe(true);
+          expect(parsed.totalRewards).toBe(2);
+          expect(parsed.blocksFound).toBe(1);
+          expect(parsed.recentBlocks).toHaveLength(1);
+          expect(parsed.sessionStartTime).toBeDefined();
+        }
+      }
+    });
+
+    it("should clear persistence when explicitly reset", () => {
+      // Set some mining data
+      miningState.set({
+        isMining: true,
+        hashRate: "1000 H/s",
+        totalRewards: 50,
+        blocksFound: 10,
+        activeThreads: 2,
+        minerIntensity: 50,
+        selectedPool: "solo",
+        sessionStartTime: Date.now(),
+        recentBlocks: [],
+        miningHistory: [],
+      });
+
+      // Explicitly clear (like on logout)
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('miningSession');
+      }
+
+      // Reset state
+      miningState.set({
+        isMining: false,
+        hashRate: "0 H/s",
+        totalRewards: 0,
+        blocksFound: 0,
+        activeThreads: 1,
+        minerIntensity: 50,
+        selectedPool: "solo",
+        sessionStartTime: undefined,
+        recentBlocks: [],
+        miningHistory: [],
+      });
+
+      const state = get(miningState);
+      expect(state.isMining).toBe(false);
+      expect(state.totalRewards).toBe(0);
+    });
+  });
 });

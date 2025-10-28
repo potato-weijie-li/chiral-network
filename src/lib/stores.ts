@@ -344,18 +344,53 @@ export interface MiningState {
   miningHistory?: MiningHistoryPoint[]; // Store hash rate history for charts
 }
 
-export const miningState = writable<MiningState>({
-  isMining: false,
-  hashRate: "0 H/s",
-  totalRewards: 0,
-  blocksFound: 0,
-  activeThreads: 1,
-  minerIntensity: 50,
-  selectedPool: "solo",
-  sessionStartTime: undefined,
-  recentBlocks: [],
-  miningHistory: [],
-});
+// Load initial mining state from localStorage
+function loadMiningState(): MiningState {
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const stored = localStorage.getItem('miningSession');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        // Convert date strings back to Date objects for recentBlocks
+        if (parsed.recentBlocks) {
+          parsed.recentBlocks = parsed.recentBlocks.map((block: any) => ({
+            ...block,
+            timestamp: new Date(block.timestamp)
+          }));
+        }
+        return parsed;
+      }
+    } catch (e) {
+      console.error('Failed to load mining state from localStorage:', e);
+    }
+  }
+  // Return default state if localStorage is not available or parsing fails
+  return {
+    isMining: false,
+    hashRate: "0 H/s",
+    totalRewards: 0,
+    blocksFound: 0,
+    activeThreads: 1,
+    minerIntensity: 50,
+    selectedPool: "solo",
+    sessionStartTime: undefined,
+    recentBlocks: [],
+    miningHistory: [],
+  };
+}
+
+export const miningState = writable<MiningState>(loadMiningState());
+
+// Subscribe to miningState changes and persist to localStorage
+if (typeof localStorage !== 'undefined') {
+  miningState.subscribe(state => {
+    try {
+      localStorage.setItem('miningSession', JSON.stringify(state));
+    } catch (e) {
+      console.error('Failed to save mining state to localStorage:', e);
+    }
+  });
+}
 
 export const miningProgress = writable({ cumulative: 0, lastBlock: 0 });
 
