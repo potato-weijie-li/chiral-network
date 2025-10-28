@@ -71,7 +71,19 @@ function loadMiningState(): MiningState {
       console.error('Failed to load mining state from localStorage:', e);
     }
   }
-  return { /* default state */ };
+  // Return default state if localStorage is not available or parsing fails
+  return {
+    isMining: false,
+    hashRate: "0 H/s",
+    totalRewards: 0,
+    blocksFound: 0,
+    activeThreads: 1,
+    minerIntensity: 50,
+    selectedPool: "solo",
+    sessionStartTime: undefined,
+    recentBlocks: [],
+    miningHistory: [],
+  };
 }
 
 export const miningState = writable<MiningState>(loadMiningState());
@@ -105,7 +117,16 @@ if ($miningState.isMining) {
 Already handles cleanup on logout:
 ```typescript
 // Clear mining state completely
-miningState.update((state: any) => ({ /* reset values */ }));
+miningState.update((state: any) => ({
+  ...state,
+  isMining: false,
+  hashRate: "0 H/s",
+  totalRewards: 0,
+  blocksFound: 0,
+  activeThreads: 0,
+  recentBlocks: [],
+  sessionStartTime: undefined
+}));
 
 // Clear any stored session data
 localStorage.removeItem('miningSession');
