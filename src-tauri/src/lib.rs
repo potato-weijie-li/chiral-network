@@ -1,10 +1,12 @@
 // Library exports for testing
 pub mod analytics;
+pub mod bandwidth;
 pub mod multi_source_download;
 
 // Download source abstraction
 pub mod download_source;
 pub mod download_scheduler;
+pub mod ftp_client;
 
 // Required modules for multi_source_download
 pub mod dht;
