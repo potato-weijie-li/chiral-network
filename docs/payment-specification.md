@@ -12,6 +12,20 @@ This document specifies the pricing, quoting, invoicing, payment, receipt, and l
 
 ---
 
+## DHT-first architecture (summary)
+
+NOTE: The billing API is DHT- and libp2p-first. To support peers behind NATs and intermittent connectivity we rely on a combination of:
+
+- libp2p Kademlia DHT for signed record discovery (price rules, canonical quote/invoice records)
+- libp2p request/response protocol for direct RPC-like interactions when peers are reachable (via peer routing or relay)
+- libp2p pubsub (gossipsub) topics for asynchronous notifications (invoice/receipt announcements, ledger updates)
+- Signed JSON records (Ed25519 / libp2p PeerId signatures) for authenticity and non-repudiation
+- Optional centralized adapters (Stripe) that run as stand-alone services and expose their availability via DHT records so peers can find them
+
+Rationale: HTTP endpoints assume stable, public addresses. Chiral Network is P2P and many nodes are behind NATs or are intermittently connected. A DHT-first API allows discovery, store-and-forward, and eventual consistency while preserving end-to-end signatures and idempotency.
+
+---
+
 ## Billing model
 
 Primary billing mode: per-byte transferred ("bytes billed"). Optionally support per-job, per-session, and subscription modes.
@@ -40,68 +54,90 @@ Primary billing mode: per-byte transferred ("bytes billed"). Optionally support 
 
 ---
 
-## High-level flows
+## High-level flows (DHT-first)
 
-1. **Quote**: client requests an estimated price (parameters: bytes, region, transfer type). Server returns signed quote with expiration.
-2. **Invoice**: client creates invoice from quote; server may reserve funds depending on adapter.
-3. **Payment**: client completes payment via adapter (Stripe checkout, client secret, Lightning invoice, or onchain transfer).
-4. **Confirmation**: provider webhook marks invoice `PAID`; server issues a receipt and writes ledger entry.
-5. **Refunds/Disputes**: handled by admin or automated workflow; append-only ledger entries record adjustments.
+1. Quote: a client computes a quote locally (preferred) using locally cached price rules; if authoritative pricing is required the client issues a DHT request/response to a price-authority peer or queries a signed price rule record stored in the DHT. The response is a signed `Quote` JSON record with `expiresAt`.
+2. Invoice: the client constructs a signed `Invoice` record (from the quote) and publishes it to the DHT under a per-account or per-provider key (or sends it directly to the provider's invoice inbox via request/response or pubsub topic). The invoice includes an `idempotencyKey` and is signed by the creator.
+3. Payment: the payer completes payment using the chosen adapter. For adapters requiring a third-party (Stripe), the adapter may be hosted by an always-on service discovered via DHT; adapters publish payment-intent payloads back to the payer as a signed record. For onchain/lightning, adapters produce a payment descriptor (tx hash / invoice) and the payer broadcasts it to the network or directly to the payee.
+4. Confirmation: once the payment is confirmed (adapter confirms or onchain confirmation observed), the payee writes a signed `Receipt` record and appends a `LedgerEntry`. The payee publishes a notification to the payee/payer pubsub inbox so both parties can reconcile. Records are persisted locally and optionally replicated via the DHT/replication layer.
+5. Refunds/Disputes: managed by the party responsible for funds (adapter or payee). Adjustments are recorded as signed ledger entries and announced via pubsub.
 
-Each stage emits audit events: `quote.created`, `invoice.created`, `payment.succeeded`, `receipt.issued`, `invoice.refunded`, etc.
-
----
-
-## Lifecycle sequence 
-
-1. Client requests a quote via `GET /v1/price` or `POST /v1/quotes`.
-2. Server validates inputs, computes price using active price rules, and returns signed `Quote` object with `expiresAt`.
-3. Client posts `POST /v1/invoices` with `quoteId` and `idempotency-key`.
-4. Server creates `Invoice` in `PENDING` or `RESERVED` state and emits `invoice.created` audit event.
-5. Client obtains payment instructions using `POST /v1/payments` (adapter returns client-facing payload).
-6. Client completes payment; adapter sends webhook to `POST /v1/webhooks/payment`.
-7. Server validates webhook, verifies signature/provider API if desired, marks invoice `PAID`, appends `LedgerEntry`, and issues `Receipt`.
-8. Record final audit events and metrics.
+Each stage emits local audit events and optional pubsub notifications: `quote.created`, `invoice.created`, `payment.initiated`, `payment.succeeded`, `receipt.issued`, `invoice.refunded`.
 
 ---
 
-## API surface
+## Lifecycle sequence (DHT message view)
 
-All endpoints require authentication (JWT for users; API keys for services). Use scopes: `billing:read`, `billing:write`, `billing:admin`.
+1. Client constructs or requests a quote using local price rules or via the request/response protocol `/<chiral>/billing/price/1.0.0` to a price rule publisher. The response is a signed `Quote` record with a `quoteId` and `expiresAt`.
+2. Client constructs a signed `Invoice` JSON record (status `PENDING`) and publishes it:
+   - Preferred: send directly to the payee's invoice inbox protocol `/<chiral>/billing/invoice/1.0.0` using libp2p request/response (fast if reachable).
+   - Fallback: store the invoice in the DHT under key `quotes/<invoiceId>` and publish a short pubsub announcement to `billing/invoices/<payeePeerId>` so the payee will fetch it when online.
+3. Payee processes the invoice, optionally transitions it to `RESERVED` (hold funds) and emits `invoice.created` event locally and via pubsub to the payer's inbox.
+4. Payer requests a payment intent via `/<chiral>/billing/payment-intent/1.0.0` or uses an adapter discovered via DHT. The adapter returns an adapter-specific payload (client secret, checkout URL, or lightning invoice) as a signed JSON message.
+5. Payer completes payment via the adapter. Adapter confirms using whichever channel is appropriate (onchain or provider webhook). For centralized adapter webhooks, the adapter publishes a signed confirmation message onto the payee's pubsub inbox or directly to the payee via request/response.
+6. Payee validates the adapter confirmation, updates invoice to `PAID`, appends a signed `LedgerEntry`, issues a `Receipt`, and announces the receipt to payer via pubsub.
+7. Parties reconcile using the signed records in their local DB and via DHT lookups.
 
-### Public / authenticated
-
-- `GET /v1/price?bytes=&region=&type=download|upload` → returns Quote (estimation)
-- `POST /v1/quotes` → create quote (body optional; returns signed quote)
-- `GET /v1/quotes/{id}`
-- `POST /v1/invoices` → create invoice from quote (requires Idempotency-Key header)
-- `GET /v1/invoices/{id}`
-- `POST /v1/payments` → create payment intent (adapter-specific payload)
-- `GET /v1/payments/{id}`
-- `POST /v1/webhooks/payment` → adapter webhook receiver (public endpoint; validate signature)
-
-### Admin (scoped: billing:admin)
-
-- `GET|POST|PUT /v1/price-rules` → CRUD price rules and versioning
-- `GET /v1/ledger` → read-only ledger with pagination, filters
-- `GET /v1/invoices?status=`
-- `POST /v1/refunds` → admin refund operation
-
-### Common headers
-
-- `Authorization: Bearer <JWT>` or `Authorization: ApiKey <key>`
-- `Idempotency-Key: <uuid>` — required for `POST /v1/invoices` and `POST /v1/payments`
-- `X-Signature: <hex>` — HMAC-SHA256 (server-signed quotes/receipts)
+Note: all records (quotes, invoices, payments, receipts, ledger entries) are signed by their issuer (peer key). Where centralized server behavior is required (e.g., Stripe-hosted adapter), that service publishes signed statements to the DHT so payees/payers can verify authenticity.
 
 ---
 
-## Message formats (examples)
+## DHT / Protocol surface (what to implement)
 
-### Quote
+Implement a small, well-documented libp2p protocol and a set of DHT record keys and pubsub topics. Example protocols and topics (names are illustrative):
+
+- Request/Response protocols (direct when peers reachable):
+  - `/chiral/billing/price/1.0.0` — request: PriceQuery, response: Quote
+  - `/chiral/billing/invoice/1.0.0` — request: InvoicePublish (client->payee) response: InvoiceAck
+  - `/chiral/billing/payment-intent/1.0.0` — request: PaymentIntentRequest, response: PaymentIntentResponse
+  - `/chiral/billing/payment-confirm/1.0.0` — adapter -> payee (confirmation)
+
+- PubSub topics (asynchronous delivery / inboxes):
+  - `billing.invoices.<peerId>` — payee's invoice announcements (new invoice available)
+  - `billing.receipts.<peerId>` — receipts delivered to payer
+  - `billing.ledger.<peerId>` — ledger entry announcements for account observers (admin/auditors)
+
+- DHT signed record keys (store-and-fetch, canonical reference):
+  - `price_rules/<region>/<version>` — contains a signed PriceRule JSON
+  - `quote/<quoteId>` — signed quote record
+  - `invoice/<invoiceId>` — canonical invoice record; payee may update status in their local DB but append-only records are stored as new signed records (e.g., `invoice/<invoiceId>/status/<seq>`)
+  - `payment/<paymentId>` — signed payment record/confirmation
+  - `receipt/<receiptId>` — signed receipt record
+
+Design notes:
+- Prefer request/response when peers are online and reachable; fall back to pubsub+DHT for store-and-forward.
+- All canonical records must be signed; verifiers use the issuer's PeerId / public key for verification.
+- Use compact, machine-readable JSON and include the `idempotencyKey` on create operations.
+- Use sequence numbers and append-only records for status transitions to preserve auditability.
+
+---
+
+## Message fields & authentication (DHT messages)
+
+Replace HTTP headers with message fields suitable for P2P transport. Every signed message SHOULD include:
+
+- `senderPeerId`: libp2p PeerId string
+- `timestamp`: ISO timestamp
+- `signature`: signature of the serialized payload (use libp2p keypair; Ed25519 preferred)
+- `signatureScheme`: e.g., `ed25519-libp2p` or `hmac-sha256` when a centralized service uses HMAC
+- `idempotencyKey`: UUID (when creating resources)
+- `auth`: optional token for centralized service interactions (JWT) — only used when interacting with an API gateway or managed adapter
+
+Authentication model:
+- End-to-end authenticity achieved by verifying `signature` with `senderPeerId` public key.
+- For delegated/central adapters (Stripe), use adapter-signed DHT records and, when centralized, TLS/JWT for control channels.
+- Local policy enforces scope/authorization: peers may accept invoices only from known payers or from peers that satisfy local trust rules.
+
+---
+
+## Message formats (examples, DHT messages)
+
+### Quote (signed DHT record)
 
 ```json
 {
   "quoteId": "q_01HABC...",
+  "issuerPeerId": "12D3KooW...",
   "accountId": "acct_001",
   "unit": "byte",
   "bytes": 1048576,
@@ -112,34 +148,40 @@ All endpoints require authentication (JWT for users; API keys for services). Use
     {"type":"base", "unit_price_microusd":10, "quantity":1048576}
   ],
   "priceRuleVersion": "v1",
-  "signature": "hmac-sha256-..."
+  "timestamp": "2025-10-27T12:00:00Z",
+  "idempotencyKey": "idem-quote-abc",
+  "signature": "ed25519:..."
 }
 ```
 
-### Invoice (server-created)
+### Invoice (peer-to-peer or DHT-published)
 
 ```json
 {
   "invoiceId": "inv_01HABC...",
+  "issuerPeerId": "12D3KooW...",
   "accountId": "acct_001",
   "quoteId": "q_01HABC...",
   "amount_due_microusd": 12345,
+  "amount_paid_microusd": 0,
   "currency": "USD",
   "status": "PENDING",
   "expiresAt": "2025-11-01T12:10:00Z",
   "paymentMethods": ["stripe","onchain_token"],
   "metadata": {"job":"download", "fileId":"F123"},
-  "createdAt": "2025-10-22T15:00:00Z",
-  "idempotencyKey": "idem-abc-123"
+  "timestamp": "2025-10-22T15:00:00Z",
+  "idempotencyKey": "idem-abc-123",
+  "signature": "ed25519:..."
 }
 ```
 
-### Payment & Receipt (Stripe example)
+### Payment confirmation / Receipt (signed)
 
 ```json
 {
   "paymentId": "pay_01HABC...",
   "invoiceId": "inv_01HABC...",
+  "issuerPeerId": "12D3KooW...",
   "method": "stripe",
   "status": "SUCCEEDED",
   "amount_microusd": 12345,
@@ -147,7 +189,8 @@ All endpoints require authentication (JWT for users; API keys for services). Use
   "providerReference": "pi_1G...",
   "receiptUrl": "https://stripe/receipt/...",
   "paidAt": "2025-10-22T15:01:10Z",
-  "signature": "hmac-sha256-..."
+  "timestamp": "2025-10-22T15:01:15Z",
+  "signature": "ed25519:..."
 }
 ```
 
@@ -163,22 +206,24 @@ All endpoints require authentication (JWT for users; API keys for services). Use
 
 ## Adapter interface (abstract)
 
-Adapters must implement these methods so core logic is adapter-agnostic:
+Adapters must implement the same logical methods, but transport is required to be P2P-friendly. Adapter implementers MUST:
 
-- `createPaymentIntent(invoice): Promise<{ adapterPayload }>` — returns client payload (checkout URL, client secret, lightning invoice)
-- `verifyWebhook(rawBody, headers): Promise<{ valid: boolean, event: NormalizedEvent }>` — verifies signature and maps to normalized event
-- `capturePayment(paymentId): Promise` (if adapter supports capture)
-- `refund(paymentId, amount): Promise` — adapter-level refund
-- `getPaymentStatus(providerRef): Promise<PaymentStatus>` — polling or verification
-- `sandboxMode: boolean` flag support
+- publish adapter availability and control endpoint metadata as signed DHT records (e.g., `adapter/stripe/<instanceId>`) that include a verification public key or verification hint and reachable multiaddrs when available
+- support libp2p request/response protocols for adapter-driven interactions when the adapter host and client/peer are mutually reachable
+- publish all adapter confirmations (payment completions, refunds, disputes) as signed canonical records into the DHT (e.g., `payment/<paymentId>`, `receipt/<receiptId>`) and/or push them to the recipient's pubsub inbox (e.g., `billing.receipts.<peerId>`) so recipients behind NATs can fetch or receive them
+- expose machine-readable provider event ids (e.g., Stripe `event.id`) and include these in the published confirmation record so recipients can deduplicate
+- never assume the recipient has a public HTTP endpoint; if the adapter receives provider webhooks (e.g., Stripe), the adapter host MUST re-publish a signed confirmation into the DHT/pubsub and not rely solely on HTTP callbacks
 
-Adapters must surface errors with machine-readable codes and not mutate canonical ledger directly.
+Adapter interface methods remain (createPaymentIntent, verifyWebhook/confirm, capture, refund, getPaymentStatus) — signatures and payloads are the same JSON structures above, but transport is libp2p request/response or pubsub messages. If an adapter additionally offers a centralized HTTP gateway for convenience, it MUST still publish canonical signed records into the DHT/pubsub when state changes (payments/refunds) occur.
 
 ---
 
 ## DB model (core tables)
 
-DDL-style model (simplified)
+The DB model remains useful for local persistence by each peer/service instance. Nodes SHOULD persist canonical signed records they issue or receive. In addition:
+
+- When a node issues an append-only state change (invoice status change, ledger entry), it should write a new signed record and optionally publish a replication hint in the DHT so other interested parties can fetch it.
+- Centralized services (if used) still maintain their DB but expose signed records into the DHT so other peers can verify.
 
 ```sql
 -- accounts
@@ -262,295 +307,172 @@ CREATE TABLE ledger_entries (
 
 - Ledger is append-only: no updates or deletions allowed.
 - Each new ledger entry computes `balance_after` using the previous balance for that account.
-- Ledger entries are signed with server key (HMAC-SHA256 or Ed25519) and stored alongside raw data.
+- Ledger entries MUST be signed by the issuer's private key (preferably the node's libp2p/Ed25519 keypair). Do not rely on symmetric HMAC for general peer-signed ledger entries; HMAC may be used as an additional envelope when a centralized adapter hosts records but the canonical signature should be the adapter's public-key signature.
 - Reconciliation job runs regularly to ensure `accounts.balance_microusd` matches last `balance_after` for that account. Mismatches create incidents.
+- Use key-rotation records published into the DHT to announce new verification keys; verifiers should accept signatures from the previous key for a configurable overlap window.
 
 ---
 
-## Security & integrity
+## Security & integrity (DHT specifics)
 
-- Auth: JWT for users, API keys for internal services. Scopes: `billing:read`, `billing:write`, `billing:admin`.
-- Require `Idempotency-Key` for `POST /v1/invoices` and `POST /v1/payments`.
-- Sign quotes and receipts with server secret. Attach `X-Signature` header to responses.
-- Validate provider webhooks (Stripe signature verification) and optionally confirm events with provider API.
-- Store raw webhook payloads for audit and troubleshooting; record verification result.
-- Rotate signing secrets every 90 days; allow 7-day overlapping secret acceptance window.
+- Authentication uses libp2p PeerIds and public-key signatures (preferred) for message authenticity. HMAC can be used for centralized services but is not suitable for general P2P authentication.
+- Require `idempotencyKey` on create operations; nodes must deduplicate by `(issuerPeerId, idempotencyKey)`.
+- All important records (quotes, invoices, payments, receipts, ledger entries) must be signed by the issuer's private key and timestamped. Recipients verify signatures and optionally use a trust policy before acting.
+- Rotate keys per node as appropriate; publish a signed key-rotation notice in the DHT to allow verifiers to migrate trust.
 
 ---
 
-## Webhook verification & handling
+## Webhook / adapter confirmations (DHT-friendly)
 
-- Verify `Stripe-Signature` timestamp within ±5 minutes.
-- Store provider `event_id` and deduplicate using unique constraint `(adapter_id, provider_event_id)`.
-- Retry policy for processing webhooks:
-  - Accept retries; process idempotently.
-  - Exponential backoff for internal retry (1s, 2s, 5s, 15s, 60s...).
-  - After N failed attempts (configurable, default 10), create incident and queue manual review.
-- If webhook signature invalid: record in `webhook_failures` table and return HTTP 400.
-- Optionally call provider API to confirm event authenticity; accept confirmed events even if signature check failed.
+- Centralized adapter services (Stripe or other hosted adapters) MUST publish adapter confirmations as signed canonical DHT records (e.g., `payment/<paymentId>`, `receipt/<receiptId>`) and/or push them to the payee's pubsub inbox `billing.receipts.<peerId>`.
+- Adapter control records (`adapter/<adapterType>/<instanceId>`) SHOULD include these fields: `instanceId`, `adapterType`, `multiaddrs` (optional), `verificationKey` (public key or key fingerprint), `signatureScheme`, `capabilities` (e.g., supports: payment-intent, refund, capture), `lastSeen`, and a `signature` by the adapter host key. Example:
 
----
+```json
+{
+  "instanceId":"stripe-01abc",
+  "adapterType":"stripe",
+  "multiaddrs":["/ip4/1.2.3.4/tcp/443"],
+  "verificationKey":"ed25519:...",
+  "signatureScheme":"ed25519-libp2p",
+  "capabilities":["payment_intent","refund"],
+  "lastSeen":"2025-10-27T12:00:00Z",
+  "signature":"ed25519:..."
+}
+```
 
-## Normalized webhook events
+- When an adapter host receives a provider webhook (e.g., Stripe `payment_intent.succeeded`), it MUST:
+  1. Verify the provider webhook authenticity using the provider's recommended verification mechanism (e.g., Stripe-Signature and stripe SDK).
+  2. Construct a signed canonical confirmation record that includes: `adapterInstanceId`, `providerEventId`, `paymentId` (internal), `invoiceId` (if known), `status`, `amount_microusd`, `currency`, `providerReference`, `timestamp`, and the adapter host `signature`.
+  3. Publish the canonical confirmation record to the DHT under `payment/<paymentId>` and/or publish a compact notification to `billing.receipts.<payeePeerId>` (payload may be the `paymentId` and adapterInstanceId) to trigger the payee to fetch the full record.
+  4. Persist the raw provider payload in the adapter host's local DB for audit; include a pointer (providerEventId) in the canonical record.
 
-- `invoice.paid` (on provider success)
-- `invoice.payment_failed`
-- `invoice.refunded`
-
-Adapter-specific events should be normalized to the above types.
-
----
-
-## Deduplication & Idempotency
-
-- Require `Idempotency-Key` header for POST endpoints that create resources.
-- If an idempotency key was already used, return the original response with `409 CONFLICT_IDEMPOTENCY` or 200 + resource depending on design.
-- For webhooks, deduplicate using `provider_event_id` + `adapter_id` unique constraint.
+- Recipients must deduplicate by `(adapterInstanceId, providerEventId)` and validate the adapter host signature against the adapter control record's `verificationKey` fetched from the DHT.
+- If the payee cannot be reached directly, pubsub announcements and DHT storage ensure the payee can fetch the signed confirmation when online.
 
 ---
 
-## Error handling & machine-readable errors
+## Stripe adapter design (reference guidance)
 
-Return JSON `{ "message": "...", "machine_code": "...", "details": {...} }`.
+For the MVP StripeAdapter implementation (hosted by an always-on service), follow this pattern:
 
-Common machine codes:
-- `INVALID_INPUT` (400)
-- `PAYMENT_REQUIRED` (402)
-- `CONFLICT_IDEMPOTENCY` (409)
-- `QUOTE_EXPIRED` (422)
-- `INTERNAL` (500)
+1. Adapter host obtains and verifies Stripe webhooks using `STRIPE_WEBHOOK_SECRET` and the Stripe SDK.
+2. On receiving a verified Stripe event that implies payment success/failure/refund, adapter constructs a canonical signed confirmation record (see above) and publishes it to the DHT under `payment/<paymentId>` and/or `receipt/<receiptId>`.
+3. Adapter publishes a short pubsub notification to the payee's inbox `billing.receipts.<payeePeerId>` with minimal fields `{ paymentId, adapterInstanceId }` so payee can fetch the full signed record.
+4. Adapter includes `providerEventId` (Stripe event id) and `providerReference` (payment_intent id) in the canonical record to support deduplication and reconciliation.
+5. Adapter hosts must maintain idempotency when processing provider webhooks: deduplicate by `providerEventId`, persist processing state, and ensure a single canonical confirmation record is published per unique provider event.
+6. Adapter control record (`adapter/stripe/<instanceId>`) must be published and signed to DHT so clients can verify adapter signatures and discover multiaddrs or other reachability hints.
 
----
-
-## Observability & testing
-
-### Metrics
-Implement metrics for the following (Prometheus style):
-- `quotes_created_total` (counter)
-- `invoices_paid_total` (counter)
-- `payments_failed_total` (counter)
-- `quote_latency_seconds` (histogram)
-- `webhook_processing_latency_seconds` (histogram)
-- `ledger_append_latency_seconds` (histogram)
-- `balance_mismatch_detected_total` (counter)
-- `refund_processing_total` (counter)
-- `adapter_error_total` (counter)
-- `sandbox_transaction_success` (gauge)
-
-### Testing guidance
-- Unit tests for price computation, tiering, rounding, region overrides, and rule versioning.
-- Integration tests using Stripe test keys and replayable test webhooks.
-- Tests to simulate duplicate webhooks and idempotent POSTs.
-- Simulate network timeouts and verify retry behavior.
+Security notes for StripeAdapter:
+- The adapter's canonical confirmation MUST be signed with the adapter host's long-lived key that is discoverable via the DHT control record.
+- Do not publish raw provider secrets or unverified payloads into the DHT. Only publish signed, minimal canonical confirmations that include a secure pointer to locally-stored raw provider payload (for auditing by the adapter host only).
+- The adapter host should provide a mechanism for payees to fetch raw provider payload via an authenticated channel (out-of-band) if required for dispute resolution. However, canonical settlement and ledger reconciliation should rely solely on signed canonical confirmation records published to the DHT.
 
 ---
 
-## Service health checks
-- `/health` must return `200` if DB, queue, and adapter are reachable.
-- Include synthetic transaction tests for sandbox mode (e.g., hourly sandbox checkout).
+## Reviewer checklist (quick)
+
+- [ ] All API interactions are feasible with DHT + libp2p request/response + pubsub (no dependency on public HTTP endpoints for core flow).
+- [ ] Adapter implementations (StripeAdapter included) publish signed canonical confirmation records to the DHT/pubsub and include `providerEventId` for dedup.
+- [ ] Ledger entries and canonical records are signed with node/adaptor public-key signatures (Ed25519/libp2p) and key-rotation is supported.
+- [ ] Idempotency dedup is defined as `(issuerPeerId, idempotencyKey)` and adapter dedup by `(adapterInstanceId, providerEventId)`.
+- [ ] Store-and-forward fallback flow via DHT + pubsub is clearly documented and examples provided.
+- [ ] Security reviewers confirm that private keys and adapter secrets are not published and are stored in secure vaults; adapter hosts expose only signed verification keys in DHT records.
+
+---
+
+## Service health & availability (P2P-aware)
+
+- Health checks remain useful for always-on nodes (central adapters, indexing nodes). For peers behind NAT there is no HTTP /health expectation; instead implement a `status` request over the request/response protocol.
+- Use probe nodes and monitoring nodes that are globally reachable to validate DHT replication and adapter availability.
 
 ---
 
 ## Edge cases & business rules
-- Partial payments: support only if invoice has `allowPartial` flag; otherwise require full payment.
-- Reservation/holding: `RESERVED` reduces available balance but does not finalize until capture.
-- Currency conversion: compute canonical amounts in `microusd`; adapters handle conversion and fees.
-- Refund windows: default 7 days; configurable per account or product.
+
+- Partial payments, reserved funds, and refund windows remain the same conceptually. For onchain tokens, adapters must publish confirmations that are verifiable by all peers.
+- Conflict resolution: when two differing signed records exist for what should be a canonical state, rely on append-only sequence numbers and deterministic conflict rules (higher sequence number wins; tie-break by signature timestamp and issuer identity as configured).
 
 ---
 
-## Migration to crypto (tokens / Lightning)
-- Keep canonical amounts in microUSD.
-- Use oracles to quote token amounts for onchain adapters.
-- Adapter returns onchain tx hash or lightning invoice; backend watches confirming event.
-- Ledger and invoice model remain unchanged.
+## Client migration notes (mapping local paymentService to DHT-based flows)
 
----
+Many frontend screens call a local `paymentService`. When migrating client code to use the DHT-based billing model, follow these guidelines:
 
-## Minimal OpenAPI sketch (example)
+- Local compute remains first-class: continue to use `paymentService.calculateDownloadCost(bytes)` locally for instant UX.
+- To obtain authoritative quotes or when a signed quote is required, use libp2p request/response: send a `PriceQuery` to a price-authority peer or fetch `price_rules/<region>/<version>` from the DHT.
+- To create an invoice:
+  - Construct a signed `Invoice` object locally and attempt a direct request/response delivery to the payee's `/<chiral>/billing/invoice/1.0.0` protocol.
+  - If direct delivery fails (peer unreachable), store the invoice in the DHT under `invoice/<invoiceId>` and publish a short pubsub announcement to `billing.invoices.<payeePeerId>` so the payee will fetch it when online.
+- To create a payment intent: query for adapter availability via DHT (e.g., `adapter/stripe` records) and request an intent over the adapter's request/response protocol or use local wallet/onchain path.
+- Wait for confirmation:
+  - Poll local DB for a signed `payment`/`receipt` record, or
+  - Subscribe to the payer/payeepubsub inbox `billing.receipts.<peerId>` to receive notifications when the other party publishes the receipt.
 
-```yaml
-openapi: 3.0.1
-info:
-  title: Chiral Billing API
-  version: "1.0"
-paths:
-  /v1/price:
-    get:
-      summary: Quote price
-      parameters:
-        - in: query
-          name: bytes
-          schema:
-            type: integer
-        - in: query
-          name: region
-          schema:
-            type: string
-        - in: query
-          name: type
-          schema:
-            type: string
-            enum: [download, upload]
-      responses:
-        '200':
-          description: Quote
-  /v1/quotes:
-    post:
-      summary: Create quote
-  /v1/invoices:
-    post:
-      summary: Create invoice from quote
-  /v1/payments:
-    post:
-      summary: Create payment intent
-  /v1/webhooks/payment:
-    post:
-      summary: Adapter webhook endpoint
-```
-
----
-
-## Additional recommended items to add (suggestions)
-
-1. **Authorization policy matrix** - detailed mapping of endpoints to roles/scopes.
-2. **Rate limits** - per-account and per-IP rate limits for quote and invoice creation to prevent abuse.
-3. **Data retention policy** - how long raw provider payloads and signatures are retained.
-4. **Operational runbook** - handling stuck payments, ledger mismatches, and webhook floods.
-5. **Migration plan** - for rotating signing secrets and migrating price rule versions.
-6. **Sample adapter implementation** - a small `StripeAdapter` reference in `src/lib/adapters/stripe.ts`.
-7. **OpenAPI/Swagger contract** - full schema for types used by clients.
-
----
-
-## Questions & TODOs
-- Decide whether `POST /v1/invoices` returns `200` for idempotent repeat or `409` with original resource link.
-- Decide canonical currency display / exchange rate provider and caching policy.
-- Confirm refund windows and partial payment policy.
-
----
-
-## Contact / ownership
-Billing & payments: @payments-team
-Security / secrets rotation: @security-team
-
----
-
-## Client migration notes (mapping existing client `paymentService` to server API)
-
-Many frontend screens already call a local `paymentService` for in-app payments. When migrating to the server-backed billing API, follow these guidelines:
-
-- Replace local compute calls with server endpoints:
-  - `paymentService.calculateDownloadCost(bytes)` → `GET /v1/price?bytes=<>&region=<>&type=download` (use returned quote)
-  - `paymentService.createInvoice(...)` → `POST /v1/invoices` with `Idempotency-Key`
-  - `paymentService.createPaymentIntent(invoice)` → `POST /v1/payments` (adapter-specific payload returned)
-  - Event flow: wait for adapter's webhook to mark invoice PAID; client polls `GET /v1/invoices/{id}` or uses websocket/event notification.
-
-- Example minimal client flow (pseudo-code):
+Example pseudo-code (libp2p request/response):
 
 ```js
-// 1. Quote
-const quote = await fetch(`/v1/price?bytes=${bytes}&region=${region}&type=download`, { headers }).then(r=>r.json());
-// 2. Create invoice (idempotent)
-const idempotency = crypto.randomUUID();
-const invoice = await fetch('/v1/invoices', { method: 'POST', headers: { 'Idempotency-Key': idempotency, 'Content-Type': 'application/json' }, body: JSON.stringify({ quoteId: quote.quoteId }) }).then(r=>r.json());
-// 3. Create payment intent
-const paymentIntent = await fetch('/v1/payments', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID(), 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: invoice.invoiceId, method: 'stripe' }) }).then(r=>r.json());
-// 4. Redirect / collect payment using adapter-provided client payload
-// 5. Poll invoice status or subscribe to notifications
-```
+// 1. Request authoritative quote
+const quote = await libp2p.request(peerMultiaddr, '/chiral/billing/price/1.0.0', { bytes, region })
+verifySignature(quote)
 
-- Update UI code paths to handle `409 CONFLICT_IDEMPOTENCY` and treat it as safe (retrieve and use existing resource). Use `Idempotency-Key` consistently across retries.
-
----
-
-## HMAC signing & verification examples
-
-Server signs quotes and receipts using HMAC-SHA256. Headers used:
-- `X-Signature` — hex-encoded HMAC-SHA256 of body
-- `X-Signature-Timestamp` — ISO timestamp used when signing
-- `X-Signature-Version` — semantic version of signing scheme (e.g., `v1`)
-
-Node.js signing example (server)
-
-```js
-import crypto from 'crypto';
-
-function signBodyHmac(secret, body) {
-  const ts = new Date().toISOString();
-  const payload = typeof body === 'string' ? body : JSON.stringify(body);
-  const h = crypto.createHmac('sha256', secret).update(payload).digest('hex');
-  return { signature: h, ts };
-}
-
-// Usage
-const { signature, ts } = signBodyHmac(process.env.BILLING_SIGNING_SECRET, quoteObj);
-// Send headers: X-Signature, X-Signature-Timestamp, X-Signature-Version: v1
-```
-
-Verification (server receiving webhooks) — pseudo-code
-
-```js
-function verifyHmac(secret, rawBody, signatureHex) {
-  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
-  return crypto.timingSafeEqual(Buffer.from(expected,'hex'), Buffer.from(signatureHex,'hex'));
+// 2. Create signed invoice and send to payee
+const invoice = sign({ invoiceId, quoteId, ... })
+try {
+  const ack = await libp2p.request(payeeMultiaddr, '/chiral/billing/invoice/1.0.0', invoice)
+  verifyAck(ack)
+} catch (err) {
+  // fallback: DHT store + pubsub announcement
+  await dht.put('invoice/' + invoice.invoiceId, invoice)
+  await pubsub.publish('billing.invoices.' + payeePeerId, { invoiceId: invoice.invoiceId })
 }
 ```
 
-Key rotation notes
-- Keep `BILLING_SIGNING_SECRET_ACTIVE` and `BILLING_SIGNING_SECRET_PREVIOUS` for a 7-day overlap window.
-- Accept signatures signed by either active or previous during rotation; log and audit which key verified the signature.
+---
+
+## Signing examples (libp2p / ed25519)
+
+Use the node's libp2p keypair to sign the serialized payload. Keep `signatureScheme` to indicate scheme.
+
+```js
+import { signPayload } from 'libp2p-crypto-helper'
+const payload = JSON.stringify(quote)
+const signature = await signPayload(localKeypair, payload) // produces ed25519:...
+quote.signature = signature
+```
 
 ---
 
-## Quick curl examples (end-to-end happy path)
+## Example DHT/pubsub flows (happy path)
 
-1) Quote (estimation)
+1) Authoritative quote request
 
-```bash
-curl -H "Authorization: Bearer $JWT" "https://api.example.com/v1/price?bytes=1048576&region=us&type=download"
-```
+- Client: request `/chiral/billing/price/1.0.0` -> price-authority peer (if reachable)
+- Price-authority: returns signed `Quote` record
+- Client: verifies signature and uses quote
 
-2) Create quote (POST) — optional
+2) Create invoice (peer-to-peer preferred)
 
-```bash
-curl -X POST -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" -d '{"bytes":1048576, "region":"us"}' https://api.example.com/v1/quotes
-```
+- Client: constructs signed `Invoice` and sends request over `/chiral/billing/invoice/1.0.0` to payee
+- Payee: acknowledges; optionally responds with `RESERVED` status record
+- If direct fail: client stores `invoice/<invoiceId>` in DHT and publishes a pubsub announcement so payee will fetch
 
-3) Create invoice from quote (idempotent)
+3) Payment & confirmation
 
-```bash
-curl -X POST -H "Authorization: Bearer $JWT" -H "Idempotency-Key: $(uuidgen)" -H "Content-Type: application/json" -d '{"quoteId":"q_01..."}' https://api.example.com/v1/invoices
-```
-
-4) Create payment intent (Stripe example)
-
-```bash
-curl -X POST -H "Authorization: Bearer $JWT" -H "Idempotency-Key: $(uuidgen)" -H "Content-Type: application/json" -d '{"invoiceId":"inv_01...","method":"stripe"}' https://api.example.com/v1/payments
-```
-
-5) Simulate webhook (local/testing only) — include provider `event_id` and signature
-
-```bash
-RAW='{"id":"evt_test_123","type":"payment_intent.succeeded","data":{"object":{"id":"pi_1...","amount":12345,"metadata":{"invoiceId":"inv_01..."}}}}'
-SIG=$(echo -n "$RAW" | openssl dgst -sha256 -hmac "$BILLING_SIGNING_SECRET" | sed 's/^.* //')
-
-curl -X POST -H "Content-Type: application/json" -H "Stripe-Signature: t=12345,v1=$SIG" --data "$RAW" http://localhost:3000/v1/webhooks/payment
-```
+- Client: creates payment via adapter (adapter discovered via DHT). Adapter publishes a signed confirmation to `billing.receipts.<payeePeerId>` or directly to the payee's payment-confirm protocol
+- Payee: verifies payment confirmation, appends `LedgerEntry`, publishes `receipt/<receiptId>` to DHT, and publishes a pubsub notification to `billing.receipts.<payerPeerId>`
 
 ---
 
 ## Required environment variables / secrets
 
-- `DATABASE_URL` — primary DB connection
-- `BILLING_SIGNING_SECRET` (or `BILLING_SIGNING_SECRET_ACTIVE` / `_PREVIOUS`) — HMAC key used for quote/receipt signing
-- `STRIPE_API_KEY` — Stripe secret for adapter
-- `STRIPE_WEBHOOK_SECRET` — Stripe webhook signing secret
-- `REDIS_URL` (optional) — idempotency key store / queue backend
+- `DATABASE_URL` — primary DB connection (for always-on nodes / adapter hosts)
+- `BILLING_SIGNING_KEY` — node's private key for signing records (libp2p keypairs recommended)
+- `STRIPE_API_KEY` — Stripe secret (only for centralized adapter hosts)
+- `STRIPE_WEBHOOK_SECRET` — Stripe webhook signing secret (only for centralized adapter hosts)
+- `REDIS_URL` (optional) — idempotency key store / queue backend for always-on services
 - `MIGRATIONS_DIR` — migrations location
 - `SENTRY_DSN` / `PROMETHEUS_PUSH_URL` (optional) — observability
 
 Secrets handling
-- Rotate `BILLING_SIGNING_SECRET` every 90 days with 7-day overlap.
-- Store secrets in a secure vault (HashiCorp Vault, AWS Secrets Manager) and do not commit to repo.
+- Store private signing keys securely; rotate keys by publishing signed key-rotation records in the DHT to allow verifiers to update trusted keys.
 
