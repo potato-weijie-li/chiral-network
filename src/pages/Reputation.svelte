@@ -16,6 +16,8 @@
   import { peerReputations, reputationAnalytics, updateMultiplePeerReputations } from '$lib/reputationStore';
   import Card from '$lib/components/ui/card.svelte';
   import Button from '$lib/components/ui/button.svelte';
+  import ComplaintDialog from '$lib/components/ComplaintDialog.svelte';
+  import { AlertTriangle } from 'lucide-svelte';
 
   // State
   let isLoading = true;
@@ -24,6 +26,10 @@
   let selectedTrustLevels: TrustLevel[] = [];
   let currentPage = 1;
   const peersPerPage = 10;
+
+  // Complaint dialog
+  let showComplaintDialog = false;
+  let complaintTargetPeer = '';
 
   // Peer list derived from store
   let peerList: PeerReputationSummary[] = [];
@@ -101,6 +107,16 @@
   function clearFilters() {
     selectedTrustLevels = [];
     searchQuery = '';
+  }
+
+  function openComplaintDialog(peerId: string) {
+    complaintTargetPeer = peerId;
+    showComplaintDialog = true;
+  }
+
+  function handleComplaintSubmitted() {
+    // Refresh reputation data after complaint filed
+    loadReputations();
   }
 
   onMount(() => {
@@ -248,6 +264,14 @@
                 <Button size="sm" variant="outline">
                   {$t('reputation.viewDetails')}
                 </Button>
+                <Button 
+                  size="sm" 
+                  variant="outline"
+                  on:click={() => openComplaintDialog(peer.peerId)}
+                >
+                  <AlertTriangle class="h-4 w-4 mr-1" />
+                  {$t('reputation.complaint.title')}
+                </Button>
                 <Button size="sm" variant="destructive">
                   {$t('reputation.blacklist')}
                 </Button>
@@ -307,3 +331,11 @@
     </div>
   </Card>
 </div>
+
+<!-- Complaint Dialog -->
+<ComplaintDialog 
+  bind:isOpen={showComplaintDialog}
+  bind:targetPeerId={complaintTargetPeer}
+  on:submitted={handleComplaintSubmitted}
+/>
+

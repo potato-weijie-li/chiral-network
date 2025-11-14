@@ -1647,6 +1647,29 @@
       "minBalanceMultiplier": "Min Balance Multiplier",
       "minBalanceMultiplierHelp": "Required balance as multiple of file price",
       "resetToDefaults": "Reset to Defaults"
+    },
+    "complaint": {
+      "title": "File Complaint",
+      "targetPeer": "Target Peer ID",
+      "targetPeerPlaceholder": "Enter peer ID to file complaint against",
+      "type": "Complaint Type",
+      "typeNonPayment": "Non-Payment",
+      "typeNonDelivery": "Non-Delivery",
+      "typeOther": "Other",
+      "details": "Details",
+      "detailsPlaceholder": "Describe what happened...",
+      "evidence": "Evidence",
+      "evidenceHelp": "Provide cryptographic proof to support your complaint",
+      "signedMessage": "Signed Transaction Message",
+      "signedMessageHelp": "The payment promise they signed before transfer",
+      "deliveryProof": "Delivery Proof",
+      "transferLog": "Transfer Completion Log",
+      "protocolLogs": "Protocol Logs",
+      "submitOnChain": "Submit to blockchain (permanent record)",
+      "submitOnChainHelp": "Costs gas but provides immutable proof",
+      "submit": "File Complaint",
+      "submitting": "Filing...",
+      "cancel": "Cancel"
     }
   },
   "common": {
@@ -1657,6 +1680,7 @@
     "page": "Page",
     "of": "of",
     "save": "Save",
-    "saving": "Saving..."
+    "saving": "Saving...",
+    "cancel": "Cancel"
   }
 }
