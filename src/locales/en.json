@@ -1615,6 +1615,38 @@
     "blacklist": "Blacklist",
     "trustDistribution": {
       "title": "Trust Level Distribution"
+    },
+    "settings": {
+      "transactionVerification": "Transaction Verification",
+      "confirmationThreshold": "Confirmation Threshold (blocks)",
+      "confirmationThresholdHelp": "Number of blocks before transaction counts for reputation",
+      "confirmationTimeout": "Confirmation Timeout (seconds)",
+      "confirmationTimeoutHelp": "Max time to wait for transaction confirmation",
+      "scoringParameters": "Scoring Parameters",
+      "maturityThreshold": "Maturity Threshold",
+      "maturityThresholdHelp": "Transactions needed to reach maximum base score",
+      "decayHalfLife": "Decay Half-Life (days)",
+      "decayHalfLifeHelp": "Time for verdict impact to decay by half (0 = disabled)",
+      "cacheTtl": "Cache TTL (seconds)",
+      "cacheTtlHelp": "Duration to cache reputation scores locally",
+      "blacklistSettings": "Blacklist Settings",
+      "blacklistMode": "Blacklist Mode",
+      "blacklistModeManual": "Manual Only",
+      "blacklistModeAutomatic": "Automatic Only",
+      "blacklistModeHybrid": "Hybrid (Both)",
+      "blacklistAutoEnabled": "Enable Automatic Blacklisting",
+      "blacklistScoreThreshold": "Score Threshold",
+      "blacklistScoreThresholdHelp": "Minimum score to avoid auto-blacklist",
+      "blacklistBadVerdictsThreshold": "Bad Verdicts Threshold",
+      "blacklistBadVerdictsThresholdHelp": "Number of bad verdicts before auto-blacklist",
+      "paymentSettings": "Payment Settings",
+      "paymentDeadlineDefault": "Default Deadline (seconds)",
+      "paymentDeadlineDefaultHelp": "Default deadline for signed payment messages",
+      "paymentGracePeriod": "Grace Period (seconds)",
+      "paymentGracePeriodHelp": "Additional time after deadline before complaint",
+      "minBalanceMultiplier": "Min Balance Multiplier",
+      "minBalanceMultiplierHelp": "Required balance as multiple of file price",
+      "resetToDefaults": "Reset to Defaults"
     }
   },
   "common": {
@@ -1623,6 +1655,8 @@
     "previous": "Previous",
     "next": "Next",
     "page": "Page",
-    "of": "of"
+    "of": "of",
+    "save": "Save",
+    "saving": "Saving..."
   }
 }
