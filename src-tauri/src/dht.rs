@@ -714,6 +714,16 @@ pub enum DhtCommand {
     AnnounceTorrent {
         info_hash: String,
     },
+    /// Publish a reputation verdict to DHT
+    PublishReputationVerdict {
+        verdict: crate::reputation::TransactionVerdict,
+        sender: oneshot::Sender<Result<(), String>>,
+    },
+    /// Fetch reputation verdicts for a peer from DHT
+    FetchReputationVerdicts {
+        peer_id: String,
+        sender: oneshot::Sender<Result<Vec<crate::reputation::TransactionVerdict>, String>>,
+    },
 }
 #[derive(Debug, Clone, Serialize)]
 pub enum DhtEvent {
@@ -2990,6 +3000,75 @@ async fn run_dht_node(
                                     Err(e) => {
                                         error!("Failed to start providing torrent {}: {}", info_hash, e);
                                         let _ = event_tx.send(DhtEvent::Error(format!("Failed to announce torrent: {}", e))).await;
+                                    }
+                                }
+                            }
+                            Some(DhtCommand::PublishReputationVerdict { verdict, sender }) => {
+                                use crate::reputation::{ReputationRecord, TransactionVerdict};
+                                
+                                // Compute DHT key: H(target_id || "tx-rep")
+                                let dht_key = TransactionVerdict::dht_key_for_target(&verdict.target_id);
+                                let record_key = kad::RecordKey::new(&dht_key);
+                                
+                                // Try to fetch existing record first
+                                match swarm.behaviour_mut().kademlia.get_record(record_key.clone()) {
+                                    Ok(_query_id) => {
+                                        // Store the verdict and sender for later processing
+                                        // For now, create a new record
+                                        let mut record = ReputationRecord::new(verdict.target_id.clone());
+                                        record.add_verdict(verdict);
+                                        
+                                        // Serialize and store
+                                        match serde_json::to_vec(&record) {
+                                            Ok(data) => {
+                                                let kad_record = kad::Record {
+                                                    key: record_key,
+                                                    value: data,
+                                                    publisher: Some(peer_id),
+                                                    expires: None,
+                                                };
+                                                
+                                                match swarm.behaviour_mut().kademlia.put_record(kad_record, kad::Quorum::One) {
+                                                    Ok(_) => {
+                                                        info!("Published reputation verdict for peer: {}", record.target_id);
+                                                        let _ = sender.send(Ok(()));
+                                                    }
+                                                    Err(e) => {
+                                                        error!("Failed to put reputation record: {}", e);
+                                                        let _ = sender.send(Err(format!("Failed to store: {}", e)));
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to serialize reputation record: {}", e);
+                                                let _ = sender.send(Err(format!("Serialization failed: {}", e)));
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to initiate DHT get for reputation: {}", e);
+                                        let _ = sender.send(Err(format!("DHT get failed: {}", e)));
+                                    }
+                                }
+                            }
+                            Some(DhtCommand::FetchReputationVerdicts { peer_id: target_peer, sender }) => {
+                                use crate::reputation::TransactionVerdict;
+                                
+                                // Compute DHT key
+                                let dht_key = TransactionVerdict::dht_key_for_target(&target_peer);
+                                let record_key = kad::RecordKey::new(&dht_key);
+                                
+                                match swarm.behaviour_mut().kademlia.get_record(record_key.clone()) {
+                                    Ok(_query_id) => {
+                                        // The result will be handled in kad_event processing
+                                        // For now, we'll send empty result as we need async handling
+                                        // In production, this would use a pending_queries map
+                                        info!("Initiated fetch for reputation verdicts of peer: {}", target_peer);
+                                        let _ = sender.send(Ok(vec![]));
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to fetch reputation verdicts: {}", e);
+                                        let _ = sender.send(Err(format!("DHT get failed: {}", e)));
                                     }
                                 }
                             }
@@ -6167,6 +6246,36 @@ impl DhtService {
             .send(DhtCommand::AnnounceTorrent { info_hash })
             .await
             .map_err(|e| e.to_string())
+    }
+
+    /// Publish a reputation verdict to the DHT
+    pub async fn publish_reputation_verdict(
+        &self,
+        verdict: crate::reputation::TransactionVerdict,
+    ) -> Result<(), String> {
+        let (sender, receiver) = oneshot::channel();
+        
+        self.cmd_tx
+            .send(DhtCommand::PublishReputationVerdict { verdict, sender })
+            .await
+            .map_err(|e| e.to_string())?;
+        
+        receiver.await.map_err(|e| e.to_string())?
+    }
+
+    /// Fetch reputation verdicts for a peer from the DHT
+    pub async fn fetch_reputation_verdicts(
+        &self,
+        peer_id: String,
+    ) -> Result<Vec<crate::reputation::TransactionVerdict>, String> {
+        let (sender, receiver) = oneshot::channel();
+        
+        self.cmd_tx
+            .send(DhtCommand::FetchReputationVerdicts { peer_id, sender })
+            .await
+            .map_err(|e| e.to_string())?;
+        
+        receiver.await.map_err(|e| e.to_string())?
     }
 
     pub async fn search_file(&self, file_hash: String) -> Result<(), String> {

@@ -3,9 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { AppSettings } from "./stores";
 import { homeDir } from "@tauri-apps/api/path";
-//importing reputation store for the reputation based peer discovery
-import ReputationStore from "$lib/reputationStore";
-const __rep = ReputationStore.getInstance();
+// Note: Reputation tracking now uses transaction-based system in reputationService.ts
+// Old ReputationStore removed - reputation is tracked via TransactionVerdicts
 
 export type NatReachabilityState = "unknown" | "public" | "private";
 export type NatConfidence = "low" | "medium" | "high";
@@ -414,7 +413,7 @@ export class DhtService {
     if (__pid) {
       // Mark we’ve seen this peer (freshness)
       try {
-        __rep.noteSeen(__pid);
+        // __rep.noteSeen(__pid); // TODO: Update for transaction-based reputation
       } catch {}
     }
 
@@ -424,7 +423,7 @@ export class DhtService {
       // ADD: count a success (no RTT here, the backend doesn't expose it)
       if (__pid) {
         try {
-          __rep.success(__pid);
+          // __rep.success(__pid); // TODO: Update for transaction-based reputation
         } catch {}
       }
     } catch (error) {
@@ -433,7 +432,7 @@ export class DhtService {
       // ADD: count a failure so low-quality peers drift down
       if (__pid) {
         try {
-          __rep.failure(__pid);
+          // __rep.failure(__pid); // TODO: Update for transaction-based reputation
         } catch {}
       }
       throw error;
@@ -510,11 +509,11 @@ export class DhtService {
               // ADDING FOR REPUTATION BASED PEER DISCOVERY: mark discovered providers as "seen" for freshness
               try {
                 if (result && Array.isArray(result.seeders)) {
-                  for (const addr of result.seeders) {
+                  // for (const addr of result.seeders) {
                     // Extract peer ID from multiaddr if present
-                    const pid = (addr?.split("/p2p/")[1] ?? addr)?.trim();
-                    if (pid) __rep.noteSeen(pid);
-                  }
+                    // const pid = (addr?.split("/p2p/")[1] ?? addr)?.trim();
+                    // if (pid) __rep.noteSeen(pid); // TODO: Update for transaction-based reputation
+                  // }
                 }
               } catch (e) {
                 console.warn("reputation noteSeen failed:", e);

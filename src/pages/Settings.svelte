@@ -37,6 +37,8 @@
   import { settings, activeBandwidthLimits, type AppSettings } from "$lib/stores";
   import { bandwidthScheduler } from "$lib/services/bandwidthScheduler";
   import { settingsBackupService } from "$lib/services/settingsBackupService";
+  import ReputationSettings from "$lib/components/ReputationSettings.svelte";
+  import { Star } from "lucide-svelte";
 
   const tr = (key: string, params?: Record<string, any>) => $t(key, params);
 
@@ -47,6 +49,7 @@
   let bandwidthSectionOpen = false;
   let languageSectionOpen = false;
   let privacySectionOpen = false;
+  let reputationSectionOpen = false;
   let notificationsSectionOpen = false;
   let diagnosticsSectionOpen = false;
 
@@ -58,6 +61,7 @@
     bandwidthScheduling: boolean;
     language: boolean;
     privacy: boolean;
+    reputation: boolean;
     notifications: boolean;
     advanced: boolean;
     diagnostics: boolean;
@@ -226,6 +230,7 @@
         if (typeof parsed.bandwidthScheduling === "boolean") bandwidthSectionOpen = parsed.bandwidthScheduling;
         if (typeof parsed.language === "boolean") languageSectionOpen = parsed.language;
         if (typeof parsed.privacy === "boolean") privacySectionOpen = parsed.privacy;
+        if (typeof parsed.reputation === "boolean") reputationSectionOpen = parsed.reputation;
         if (typeof parsed.notifications === "boolean") notificationsSectionOpen = parsed.notifications;
         if (typeof parsed.advanced === "boolean") advancedSectionOpen = parsed.advanced;
         if (typeof parsed.diagnostics === "boolean") diagnosticsSectionOpen = parsed.diagnostics;
@@ -246,6 +251,7 @@
         bandwidthScheduling: bandwidthSectionOpen,
         language: languageSectionOpen,
         privacy: privacySectionOpen,
+        reputation: reputationSectionOpen,
         notifications: notificationsSectionOpen,
         advanced: advancedSectionOpen,
         diagnostics: diagnosticsSectionOpen,
@@ -1903,6 +1909,17 @@ function sectionMatches(section: string, query: string) {
           </Label>
         </div>
       </div>
+    </Expandable>
+  {/if}
+
+  <!-- Reputation Settings -->
+  {#if sectionMatches("reputation", search)}
+    <Expandable bind:isOpen={reputationSectionOpen}>
+      <div slot="title" class="flex items-center gap-3">
+        <Star class="h-6 w-6 text-yellow-600" />
+        <h2 class="text-xl font-semibold text-black">{$t("nav.reputation")}</h2>
+      </div>
+      <ReputationSettings />
     </Expandable>
   {/if}
 

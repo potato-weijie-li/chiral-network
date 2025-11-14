@@ -1,97 +1,154 @@
-// src/lib/reputationStore.ts
-export type PeerId = string;
+/**
+ * Svelte store for reputation data
+ * Provides reactive access to reputation information
+ */
 
-export type PeerReputation = {
-  alpha: number;      // successes (decayed)
-  beta: number;       // failures (decayed)
-  rttMsEMA: number;   // exponential moving average
-  lastSeenMs: number; // epoch ms
-  lastUpdatedMs: number;
-};
+import { writable, get } from 'svelte/store';
+import type {
+  PeerReputationSummary,
+  ReputationAnalytics,
+} from '$lib/types/reputation';
+import { reputationService } from '$lib/services/reputationService';
+import { TrustLevel } from '$lib/types/reputation';
 
-export class ReputationStore {
-  private static _instance: ReputationStore | null = null;
-  static getInstance() {
-    if (!this._instance) this._instance = new ReputationStore();
-    return this._instance;
-  }
+// ============================================================================
+// STORES
+// ============================================================================
 
-  private store = new Map<PeerId, PeerReputation>();
-  private readonly a0 = 1;        // Beta prior
-  private readonly b0 = 1;
-  private readonly rttAlpha = 0.3; // EMA weight
-  private readonly halfLifeDays = 14;
+export const peerReputations = writable<Map<string, PeerReputationSummary>>(new Map());
+export const reputationAnalytics = writable<ReputationAnalytics>({
+  totalPeers: 0,
+  averageScore: 0.0,
+  trustLevelDistribution: {
+    [TrustLevel.Trusted]: 0,
+    [TrustLevel.High]: 0,
+    [TrustLevel.Medium]: 0,
+    [TrustLevel.Low]: 0,
+    [TrustLevel.Unknown]: 0,
+  },
+  recentVerdicts: [],
+  topPerformers: [],
+});
 
-  private constructor() {}
+// ============================================================================
+// FUNCTIONS
+// ============================================================================
 
-  private decay(rep: PeerReputation) {
-    const now = Date.now();
-    const days = (now - rep.lastUpdatedMs) / (1000 * 60 * 60 * 24);
-    if (days <= 0) return;
-    const k = Math.pow(0.5, days / this.halfLifeDays);
-    rep.alpha *= k;
-    rep.beta  *= k;
-    rep.lastUpdatedMs = now;
-  }
-
-  private ensure(id: PeerId): PeerReputation {
-    if (!this.store.has(id)) {
-      this.store.set(id, {
-        alpha: 0,
-        beta: 0,
-        rttMsEMA: 300,
-        lastSeenMs: 0,
-        lastUpdatedMs: Date.now(),
-      });
-    }
-    const rep = this.store.get(id)!;
-    this.decay(rep);
-    return rep;
-  }
-
-  noteSeen(id: PeerId) {
-    const rep = this.ensure(id);
-    rep.lastSeenMs = Date.now();
-  }
-
-  success(id: PeerId, rttMs?: number) {
-    const rep = this.ensure(id);
-    rep.alpha += 1;
-    if (typeof rttMs === "number") {
-      rep.rttMsEMA = rep.rttMsEMA * (1 - this.rttAlpha) + rttMs * this.rttAlpha;
-    }
-  }
-
-  failure(id: PeerId) {
-    const rep = this.ensure(id);
-    rep.beta += 1;
-  }
-
-  // Core components in [0,1]
-  repScore(id: PeerId): number {
-    const rep = this.ensure(id);
-    return (rep.alpha + this.a0) / (rep.alpha + rep.beta + this.a0 + this.b0);
-  }
-
-  freshScore(id: PeerId): number {
-    const rep = this.ensure(id);
-    if (!rep.lastSeenMs) return 0;
-    const ageSec = (Date.now() - rep.lastSeenMs) / 1000;
-    if (ageSec <= 60) return 1;
-    if (ageSec >= 86400) return 0; // > 24h
-    return 1 - (ageSec - 60) / (86400 - 60);
-  }
-
-  perfScore(id: PeerId): number {
-    const rep = this.ensure(id);
-    const clamped = Math.max(100, Math.min(2000, rep.rttMsEMA));
-    return 1 - (clamped - 100) / (2000 - 100);
-  }
-
-  composite(id: PeerId): number {
-    const wRep = 0.6, wFresh = 0.25, wPerf = 0.15;
-    return wRep * this.repScore(id) + wFresh * this.freshScore(id) + wPerf * this.perfScore(id);
+/**
+ * Fetch and update reputation for a single peer
+ */
+export async function updatePeerReputation(peerId: string): Promise<void> {
+  try {
+    const summary = await reputationService.getPeerReputation(peerId);
+    peerReputations.update((reps) => {
+      reps.set(peerId, summary);
+      return new Map(reps); // Create new map to trigger reactivity
+    });
+    updateAnalytics();
+  } catch (error) {
+    console.error(`Failed to update reputation for peer ${peerId}:`, error);
   }
 }
 
-export default ReputationStore;
+/**
+ * Fetch and update reputation for multiple peers
+ */
+export async function updateMultiplePeerReputations(peerIds: string[]): Promise<void> {
+  const promises = peerIds.map((id) => reputationService.getPeerReputation(id));
+  try {
+    const summaries = await Promise.all(promises);
+    peerReputations.update((reps) => {
+      summaries.forEach((summary: PeerReputationSummary) => {
+        reps.set(summary.peerId, summary);
+      });
+      return new Map(reps); // Create new map to trigger reactivity
+    });
+    updateAnalytics();
+  } catch (error) {
+    console.error('Failed to update multiple peer reputations:', error);
+  }
+}
+
+/**
+ * Get cached reputation for a peer (returns immediately)
+ */
+export function getCachedPeerReputation(peerId: string): PeerReputationSummary | undefined {
+  const reps = get(peerReputations);
+  return reps.get(peerId);
+}
+
+/**
+ * Update analytics based on current peer reputations
+ */
+function updateAnalytics(): void {
+  const reps = get(peerReputations);
+  const allReps = Array.from(reps.values());
+
+  if (allReps.length === 0) {
+    reputationAnalytics.set({
+      totalPeers: 0,
+      averageScore: 0.0,
+      trustLevelDistribution: {
+        [TrustLevel.Trusted]: 0,
+        [TrustLevel.High]: 0,
+        [TrustLevel.Medium]: 0,
+        [TrustLevel.Low]: 0,
+        [TrustLevel.Unknown]: 0,
+      },
+      recentVerdicts: [],
+      topPerformers: [],
+    });
+    return;
+  }
+
+  // Calculate analytics
+  const totalPeers = allReps.length;
+  const averageScore = allReps.reduce((sum, rep) => sum + rep.score, 0) / totalPeers;
+
+  // Trust level distribution
+  const trustLevelDistribution = {
+    [TrustLevel.Trusted]: 0,
+    [TrustLevel.High]: 0,
+    [TrustLevel.Medium]: 0,
+    [TrustLevel.Low]: 0,
+    [TrustLevel.Unknown]: 0,
+  };
+
+  allReps.forEach((rep) => {
+    trustLevelDistribution[rep.trustLevel]++;
+  });
+
+  // Top performers (sorted by score, take top 10)
+  const topPerformers = [...allReps]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+
+  reputationAnalytics.set({
+    totalPeers,
+    averageScore,
+    trustLevelDistribution,
+    recentVerdicts: [],  // Would need to aggregate from all peers
+    topPerformers,
+  });
+}
+
+/**
+ * Clear all cached reputation data
+ */
+export function clearReputationCache(): void {
+  peerReputations.set(new Map());
+  reputationService.clearCache();
+  updateAnalytics();
+}
+
+/**
+ * Cleanup stale cache entries
+ */
+export function cleanupReputationCache(): void {
+  reputationService.cleanupCache();
+}
+
+// Auto-cleanup every 5 minutes
+if (typeof window !== 'undefined') {
+  setInterval(cleanupReputationCache, 5 * 60 * 1000);
+}
