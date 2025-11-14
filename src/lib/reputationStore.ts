@@ -3,15 +3,13 @@
  * Provides reactive access to reputation information
  */
 
-import { writable, derived, get } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 import type {
   PeerReputationSummary,
   ReputationAnalytics,
-  TrustLevel,
-  TransactionVerdict,
 } from '$lib/types/reputation';
-import { reputationService } from '$lib/services/reputationService_new';
-import { TrustLevel as TrustLevelEnum } from '$lib/types/reputation';
+import { reputationService } from '$lib/services/reputationService';
+import { TrustLevel } from '$lib/types/reputation';
 
 // ============================================================================
 // STORES
@@ -22,11 +20,11 @@ export const reputationAnalytics = writable<ReputationAnalytics>({
   totalPeers: 0,
   averageScore: 0.0,
   trustLevelDistribution: {
-    [TrustLevelEnum.Trusted]: 0,
-    [TrustLevelEnum.High]: 0,
-    [TrustLevelEnum.Medium]: 0,
-    [TrustLevelEnum.Low]: 0,
-    [TrustLevelEnum.Unknown]: 0,
+    [TrustLevel.Trusted]: 0,
+    [TrustLevel.High]: 0,
+    [TrustLevel.Medium]: 0,
+    [TrustLevel.Low]: 0,
+    [TrustLevel.Unknown]: 0,
   },
   recentVerdicts: [],
   topPerformers: [],
@@ -60,7 +58,7 @@ export async function updateMultiplePeerReputations(peerIds: string[]): Promise<
   try {
     const summaries = await Promise.all(promises);
     peerReputations.update((reps) => {
-      summaries.forEach((summary) => {
+      summaries.forEach((summary: PeerReputationSummary) => {
         reps.set(summary.peerId, summary);
       });
       return new Map(reps); // Create new map to trigger reactivity
@@ -91,11 +89,11 @@ function updateAnalytics(): void {
       totalPeers: 0,
       averageScore: 0.0,
       trustLevelDistribution: {
-        [TrustLevelEnum.Trusted]: 0,
-        [TrustLevelEnum.High]: 0,
-        [TrustLevelEnum.Medium]: 0,
-        [TrustLevelEnum.Low]: 0,
-        [TrustLevelEnum.Unknown]: 0,
+        [TrustLevel.Trusted]: 0,
+        [TrustLevel.High]: 0,
+        [TrustLevel.Medium]: 0,
+        [TrustLevel.Low]: 0,
+        [TrustLevel.Unknown]: 0,
       },
       recentVerdicts: [],
       topPerformers: [],
@@ -109,11 +107,11 @@ function updateAnalytics(): void {
 
   // Trust level distribution
   const trustLevelDistribution = {
-    [TrustLevelEnum.Trusted]: 0,
-    [TrustLevelEnum.High]: 0,
-    [TrustLevelEnum.Medium]: 0,
-    [TrustLevelEnum.Low]: 0,
-    [TrustLevelEnum.Unknown]: 0,
+    [TrustLevel.Trusted]: 0,
+    [TrustLevel.High]: 0,
+    [TrustLevel.Medium]: 0,
+    [TrustLevel.Low]: 0,
+    [TrustLevel.Unknown]: 0,
   };
 
   allReps.forEach((rep) => {

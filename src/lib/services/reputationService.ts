@@ -4,17 +4,17 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type {
-  TransactionVerdict,
-  SignedTransactionMessage,
-  TrustLevel,
-  PeerReputationSummary,
-  ReputationConfig,
-  CachedScore,
-  BlacklistEntry,
+import {
+  type TransactionVerdict,
+  type SignedTransactionMessage,
+  type PeerReputationSummary,
+  type ReputationConfig,
+  type CachedScore,
+  type BlacklistEntry,
   VerdictOutcome,
-} from '$lib/types/reputation_new';
-import { getTrustLevelFromScore, DEFAULT_REPUTATION_CONFIG } from '$lib/types/reputation_new';
+  getTrustLevelFromScore,
+  DEFAULT_REPUTATION_CONFIG,
+} from '$lib/types/reputation';
 
 // ============================================================================
 // REPUTATION SERVICE
@@ -261,6 +261,8 @@ class ReputationService {
       case VerdictOutcome.Disputed:
         return 0.5;
       case VerdictOutcome.Bad:
+        return 0.0;
+      default:
         return 0.0;
     }
   }
