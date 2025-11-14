@@ -1580,5 +1580,49 @@
     "error": {
       "fetchBlocks": "Failed to fetch blocks"
     }
+  },
+  "reputation": {
+    "analytics": {
+      "totalPeers": "Total Peers",
+      "averageScore": "Average Score"
+    },
+    "trustLevel": {
+      "trusted": "Trusted",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "unknown": "Unknown"
+    },
+    "search": {
+      "placeholder": "Search peers..."
+    },
+    "sortBy": {
+      "score": "By Score",
+      "successful": "By Successful Transactions",
+      "failed": "By Failed Transactions"
+    },
+    "clearFilters": "Clear Filters",
+    "peerList": {
+      "title": "Peer Reputation",
+      "noPeers": "No peers found"
+    },
+    "score": "Score",
+    "successful": "Successful",
+    "failed": "Failed",
+    "totalVerdicts": "Total Verdicts",
+    "lastUpdated": "Last Updated",
+    "viewDetails": "View Details",
+    "blacklist": "Blacklist",
+    "trustDistribution": {
+      "title": "Trust Level Distribution"
+    }
+  },
+  "common": {
+    "refresh": "Refresh",
+    "loading": "Loading...",
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page",
+    "of": "of"
   }
 }
