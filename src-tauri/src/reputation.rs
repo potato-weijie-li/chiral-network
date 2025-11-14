@@ -47,6 +47,45 @@ pub struct TransactionVerdict {
     pub evidence_blobs: Option<Vec<String>>,
 }
 
+/// Container for storing multiple verdicts for a peer in DHT
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReputationRecord {
+    /// Peer whose reputation this records
+    pub target_id: String,
+    /// All verdicts for this peer
+    pub verdicts: Vec<TransactionVerdict>,
+    /// Last updated timestamp
+    pub last_updated: u64,
+}
+
+impl ReputationRecord {
+    pub fn new(target_id: String) -> Self {
+        Self {
+            target_id,
+            verdicts: Vec::new(),
+            last_updated: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }
+    }
+
+    pub fn add_verdict(&mut self, verdict: TransactionVerdict) {
+        // Check for duplicates (same issuer and seq_no)
+        let is_duplicate = self.verdicts.iter().any(|v| {
+            v.issuer_id == verdict.issuer_id && v.issuer_seq_no == verdict.issuer_seq_no
+        });
+
+        if !is_duplicate {
+            self.verdicts.push(verdict);
+            self.last_updated = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+        }
+    }
+}
+
 impl TransactionVerdict {
     /// Basic validation performed client-side before accepting a verdict.
     pub fn validate(&self) -> Result<(), String> {
