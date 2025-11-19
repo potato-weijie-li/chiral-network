@@ -12,6 +12,7 @@ import { wallet, transactions, type Transaction } from "$lib/stores";
 import { get } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 import { walletService } from "$lib/wallet";
+import { toast } from "$lib/stores/toastStore";
 
 // type FullNetworkStats = {
 //   network_difficulty: number
@@ -89,6 +90,22 @@ export interface DownloadPayment {
   amount: number; // in Chiral
 }
 
+interface PaymentNotificationAttempt {
+  fileHash: string;
+  fileName: string;
+  fileSize: number;
+  seederAddress: string;
+  seederPeerId: string;
+  downloaderAddress: string;
+  amount: number;
+  transactionId: number;
+  transactionHash: string;
+  attemptCount: number;
+  lastError?: string;
+  status: 'pending' | 'delivered' | 'failed';
+  timestamp: number;  // When this was created
+}
+
 export class PaymentService {
   private static initialized = false;
   private static processedPayments = new Set<string>(); // Track processed file hashes (for downloads)
@@ -96,6 +113,13 @@ export class PaymentService {
   private static pollingInterval: number | null = null;
   private static readonly POLL_INTERVAL_MS = 10000; // Poll every 10 seconds
   private static readonly WALLET_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+  
+  // Payment notification retry tracking
+  // Key format: "${fileHash}-${seederAddress}" to prevent collisions
+  // when same file is downloaded from different seeders
+  private static pendingNotifications = new Map<string, PaymentNotificationAttempt>();
+  private static lastRetryAttempt = new Map<string, number>(); // Rate limiting
+  private static cleanupTimer: NodeJS.Timeout | null = null;
 
   /**
    * Initialize payment service and load persisted data (only runs once)
@@ -119,6 +143,170 @@ export class PaymentService {
     }
 
     this.initialized = true;
+  }
+
+  /**
+   * Initialize timer-based cleanup (runs every 10 minutes)
+   */
+  private static initCleanupTimer(): void {
+    if (this.cleanupTimer === null) {
+      this.cleanupTimer = setInterval(() => {
+        this.cleanupOldNotifications();
+      }, 10 * 60 * 1000); // 10 minutes
+      console.log('🧹 Notification cleanup timer initialized');
+    }
+  }
+
+  /**
+   * Cleanup old failed notifications (>1 hour old) to prevent memory leak
+   */
+  private static cleanupOldNotifications(): void {
+    const ONE_HOUR = 60 * 60 * 1000;
+    const now = Date.now();
+    
+    for (const [key, notification] of this.pendingNotifications.entries()) {
+      if (notification.status === 'failed' && (now - notification.timestamp) > ONE_HOUR) {
+        this.pendingNotifications.delete(key);
+        console.log(`🧹 Cleaned up old failed notification: ${key}`);
+      }
+    }
+  }
+
+  /**
+   * Send payment notification with automatic retry
+   */
+  private static async sendPaymentNotificationWithRetry(
+    fileHash: string,
+    fileName: string,
+    fileSize: number,
+    seederAddress: string,
+    seederPeerId: string,
+    downloaderAddress: string,
+    amount: number,
+    transactionId: number,
+    transactionHash: string
+  ): Promise<{ success: boolean; error?: string }> {
+    
+    // Initialize cleanup timer on first use
+    this.initCleanupTimer();
+    
+    // Use composite key to prevent collision when same file is downloaded from different seeders
+    const notificationKey = `${fileHash}-${seederAddress}`;
+    
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAYS_MS = [0, 5000, 15000]; // 0s, 5s, 15s total
+    // Rationale: DHT typically reconnects within 5-10 seconds
+    // First retry catches quick recoveries, second gives more time
+    // Total 20s window provides fast user feedback
+    
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      // Wait before retry (skip on first attempt)
+      if (attempt > 0) {
+        const delay = RETRY_DELAYS_MS[attempt];
+        await new Promise(resolve => setTimeout(resolve, delay));
+        console.log(`🔄 Retry attempt ${attempt + 1}/${MAX_ATTEMPTS} for payment ${transactionHash}`);
+      }
+      
+      try {
+        await invoke("record_download_payment", {
+          fileHash,
+          fileName,
+          fileSize,
+          seederWalletAddress: seederAddress,
+          seederPeerId,
+          downloaderAddress,
+          amount,
+          transactionId,
+          transactionHash,
+        });
+        
+        // Success!
+        console.log(`✅ Payment notification delivered on attempt ${attempt + 1}`);
+        this.pendingNotifications.delete(notificationKey);
+        return { success: true };
+        
+      } catch (error) {
+        const errorMsg = String(error);
+        console.warn(`❌ Attempt ${attempt + 1} failed:`, errorMsg);
+        
+        // Store full context for manual retry
+        this.pendingNotifications.set(notificationKey, {
+          fileHash,
+          fileName,
+          fileSize,
+          seederAddress,
+          seederPeerId,
+          downloaderAddress,
+          amount,
+          transactionId,
+          transactionHash,
+          attemptCount: attempt + 1,
+          lastError: errorMsg,
+          status: attempt < MAX_ATTEMPTS - 1 ? 'pending' : 'failed',
+          timestamp: Date.now()
+        });
+        
+        // If this was the last attempt, give up
+        if (attempt === MAX_ATTEMPTS - 1) {
+          return { 
+            success: false, 
+            error: `Failed to notify seeder after ${MAX_ATTEMPTS} attempts. Last error: ${errorMsg}` 
+          };
+        }
+      }
+    }
+    
+    return { success: false, error: 'Unexpected retry loop exit' };
+  }
+
+  /**
+   * Manually retry sending payment notification to seeder
+   * Called from UI when user clicks "Retry Notification" button
+   * @param fileHash - The hash of the file
+   * @param seederAddress - The wallet address of the seeder
+   */
+  static async retryPaymentNotification(fileHash: string, seederAddress: string): Promise<boolean> {
+    const notificationKey = `${fileHash}-${seederAddress}`;
+    
+    // Rate limiting: max 1 retry per 10 seconds per notification
+    const lastAttempt = this.lastRetryAttempt.get(notificationKey) || 0;
+    const now = Date.now();
+    console.log(`🔍 Rate limit check: key=${notificationKey}, lastAttempt=${lastAttempt}, now=${now}, diff=${now - lastAttempt}`);
+    if (now - lastAttempt < 10000) {
+      console.warn('⏱️ Rate limit: Please wait before retrying - RETURNING FALSE');
+      return false;
+    }
+    console.log('✅ Rate limit passed, setting timestamp and proceeding');
+    this.lastRetryAttempt.set(notificationKey, now);
+    
+    const pending = this.pendingNotifications.get(notificationKey);
+    if (!pending) {
+      console.warn('No pending notification found for', fileHash);
+      return false;
+    }
+    
+    // Use stored context (includes all necessary fields)
+    const result = await this.sendPaymentNotificationWithRetry(
+      pending.fileHash,
+      pending.fileName,
+      pending.fileSize,
+      pending.seederAddress,
+      pending.seederPeerId,
+      pending.downloaderAddress,
+      pending.amount,
+      pending.transactionId,
+      pending.transactionHash
+    );
+    
+    return result.success;
+  }
+
+  /**
+   * Get list of pending notifications for UI display
+   * Note: Cleanup runs automatically every 10 minutes via timer
+   */
+  static getPendingNotifications(): PaymentNotificationAttempt[] {
+    return Array.from(this.pendingNotifications.values());
   }
 
   /**
@@ -247,12 +435,14 @@ export class PaymentService {
     error?: string;
   }> {
     try {
-      // Check if this file has already been paid for
-      if (this.processedPayments.has(fileHash)) {
-        console.log("⚠️ Payment already processed for file:", fileHash);
+      // Check if this file has already been paid for from this specific seeder
+      // Use composite key to allow paying different seeders for same file
+      const paymentKey = `${fileHash}-${seederAddress}`;
+      if (this.processedPayments.has(paymentKey)) {
+        console.log("⚠️ Payment already processed for file from this seeder:", paymentKey);
         return {
           success: false,
-          error: "Payment already processed for this file",
+          error: "Payment already processed for this file from this seeder",
         };
       }
 
@@ -368,28 +558,51 @@ export class PaymentService {
         return updated;
       });
 
-      // Mark this file as paid to prevent duplicate payments
-      this.processedPayments.add(fileHash);
-      console.log("✅ Marked file as paid:", fileHash);
+      // Mark this file as paid from this seeder to prevent duplicate payments
+      this.processedPayments.add(paymentKey);
+      console.log("✅ Marked file as paid from this seeder:", paymentKey);
 
-      // Notify backend about the payment - this will send P2P message to the seeder
-      try {
-        await invoke("record_download_payment", {
-          fileHash,
-          fileName,
-          fileSize,
-          seederWalletAddress: seederAddress,
-          seederPeerId: seederPeerId || seederAddress, // Fallback to wallet address if no peer ID
-          downloaderAddress: currentWallet.address || "unknown",
-          amount,
-          transactionId,
-          transactionHash,
-        });
-        console.log("✅ Payment notification sent to seeder:", seederAddress);
-      } catch (invokeError) {
-        console.warn("Failed to send payment notification:", invokeError);
-        // Continue anyway - frontend state is updated
+      // Send payment notification with retry logic
+      const notificationResult = await this.sendPaymentNotificationWithRetry(
+        fileHash,
+        fileName,
+        fileSize,
+        seederAddress,
+        seederPeerId || seederAddress,
+        currentWallet.address || "unknown",
+        amount,
+        transactionId,
+        transactionHash
+      );
+
+      if (!notificationResult.success) {
+        // Show user-friendly error with retry option
+        toast.warning(
+          `Payment sent (${amount.toFixed(4)} Chiral), but seeder notification failed. ` +
+          `Seeder may not know about payment yet. You can retry notification from Wallet tab.`,
+          10000  // 10 second display
+        );
       }
+
+      // Store notification status in transaction metadata
+      // This allows UI to show notification status after page refresh
+      const transactionWithStatus = {
+        ...newTransaction,
+        metadata: {
+          notificationDelivered: notificationResult.success,
+          notificationError: notificationResult.error,
+          lastNotificationAttempt: Date.now()
+        }
+      };
+
+      // Update the transaction in history with metadata
+      transactions.update((txs) => {
+        const updated = txs.map(tx => 
+          tx.id === transactionId ? transactionWithStatus : tx
+        );
+        saveTransactionsToStorage(updated);
+        return updated;
+      });
 
       return {
         success: true,
@@ -418,14 +631,17 @@ export class PaymentService {
     transactionHash?: string
   ): Promise<{ success: boolean; transactionId?: number; error?: string }> {
     try {
-      // Generate unique key for this payment receipt
-      const paymentKey = `${fileHash}-${downloaderAddress}`;
+      // Enhanced deduplication: prefer transaction hash, fall back to file+address
+      // Note: transactionHash may be empty if blockchain transaction failed
+      const paymentKey = (transactionHash && transactionHash !== "") 
+        ? `txhash-${transactionHash}` 
+        : `${fileHash}-${downloaderAddress}`;
 
       // Check if we already received this payment
       if (this.receivedPayments.has(paymentKey)) {
-        console.log("⚠️ Payment already received for:", paymentKey);
+        console.log("⚠️ Duplicate payment notification ignored:", paymentKey);
         return {
-          success: false,
+          success: true,  // Not an error, just already processed
           error: "Payment already received",
         };
       }

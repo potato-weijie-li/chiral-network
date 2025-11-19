@@ -637,17 +637,19 @@ async fn record_download_payment(
         match dht.send_message_to_peer(&seeder_peer_id, wrapped_message).await {
             Ok(_) => {
                 println!("✅ P2P payment notification sent to peer: {}", seeder_peer_id);
+                Ok(())  // Only return success if P2P send succeeded
             }
             Err(e) => {
-                // Don't fail the whole operation if P2P message fails
-                println!("⚠️ Failed to send P2P payment notification: {}. Seeder will see payment when they check blockchain.", e);
+                let error_msg = format!("Failed to send P2P payment notification: {}", e);
+                println!("❌ {}", error_msg);
+                Err(error_msg)  // Return error to frontend so it can retry
             }
         }
     } else {
-        println!("⚠️ DHT not available, payment notification only sent locally");
+        let error_msg = "DHT not available for payment notification".to_string();
+        println!("❌ {}", error_msg);
+        Err(error_msg)  // Return error when DHT is None
     }
-
-    Ok(())
 }
 
 #[tauri::command]

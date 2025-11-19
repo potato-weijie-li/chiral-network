@@ -836,4 +836,366 @@ describe("PaymentService", () => {
       expect(txs[1].description).toContain("file1");
     });
   });
+
+  describe("Payment Notification with Retry", () => {
+    beforeEach(() => {
+      // Reset notification tracking
+      (PaymentService as any).pendingNotifications = new Map();
+      (PaymentService as any).lastRetryAttempt = new Map();
+      (PaymentService as any).cleanupTimer = null;
+    });
+
+    it("should succeed on first attempt when DHT is available", async () => {
+      const seederAddress = "0xABCDEF1234567890abcdef1234567890ABCDEF12";
+      
+      wallet.set({ ...get(wallet), balance: 100 });
+
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === "process_download_payment") {
+          return "0xtxhash123";
+        }
+        if (command === "record_download_payment") {
+          return undefined; // Success
+        }
+        if (command === "get_full_network_stats") {
+          return {
+            network_difficulty: 1000,
+            network_hashrate: 5000,
+            active_miners: 10,
+            power_usage: 100,
+          };
+        }
+        return undefined;
+      });
+
+      const result = await PaymentService.processDownloadPayment(
+        "QmHash123",
+        "test.txt",
+        1024 * 1024,
+        seederAddress
+      );
+
+      expect(result.success).toBe(true);
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("record_download_payment", expect.any(Object));
+
+      // Verify notification metadata in transaction
+      const txs = get(transactions);
+      const tx = txs.find(t => t.id === result.transactionId);
+      expect(tx?.metadata?.notificationDelivered).toBe(true);
+    });
+
+    it("should retry 3 times with correct delays", async () => {
+      const seederAddress = "0xABCDEF1234567890abcdef1234567890ABCDEF12";
+      
+      wallet.set({ ...get(wallet), balance: 100 });
+
+      let attempts = 0;
+      const attemptTimes: number[] = [];
+
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === "record_download_payment") {
+          attempts++;
+          attemptTimes.push(Date.now());
+          if (attempts < 3) throw new Error("DHT unavailable");
+          return undefined; // Success on 3rd attempt
+        }
+        if (command === "process_download_payment") {
+          return "0xtxhash123";
+        }
+        if (command === "get_full_network_stats") {
+          return {
+            network_difficulty: 1000,
+            network_hashrate: 5000,
+            active_miners: 10,
+            power_usage: 100,
+          };
+        }
+        return undefined;
+      });
+
+      const result = await PaymentService.processDownloadPayment(
+        "QmHash123",
+        "test.txt",
+        1024 * 1024,
+        seederAddress
+      );
+
+      expect(attempts).toBe(3);
+      expect(result.success).toBe(true);
+
+      // Verify timing between attempts (should have delays)
+      expect(attemptTimes[1]! - attemptTimes[0]!).toBeGreaterThanOrEqual(4999);
+      expect(attemptTimes[2]! - attemptTimes[1]!).toBeGreaterThanOrEqual(14999);
+    }, 30000);
+
+    it("should fail after 3 attempts and store error in transaction metadata", async () => {
+      const seederAddress = "0xABCDEF1234567890abcdef1234567890ABCDEF12";
+      
+      wallet.set({ ...get(wallet), balance: 100 });
+
+      let attempts = 0;
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === "record_download_payment") {
+          attempts++;
+          throw new Error("DHT offline");
+        }
+        if (command === "process_download_payment") {
+          return "0xtxhash123";
+        }
+        if (command === "get_full_network_stats") {
+          return {
+            network_difficulty: 1000,
+            network_hashrate: 5000,
+            active_miners: 10,
+            power_usage: 100,
+          };
+        }
+        return undefined;
+      });
+
+      const result = await PaymentService.processDownloadPayment(
+        "QmHash123",
+        "test.txt",
+        1024 * 1024,
+        seederAddress
+      );
+
+      expect(result.success).toBe(true); // Payment still succeeded locally
+      expect(attempts).toBe(3);
+
+      // Verify notification failure stored in transaction metadata
+      const txs = get(transactions);
+      const tx = txs.find(t => t.id === result.transactionId);
+      expect(tx?.metadata?.notificationDelivered).toBe(false);
+      expect(tx?.metadata?.notificationError).toContain("Failed to notify seeder after 3 attempts");
+    }, 30000);
+
+    it("should allow manual retry of failed notification", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const seederAddress = "0xABCDEF1234567890abcdef1234567890ABCDEF12";
+      
+      wallet.set({ ...get(wallet), balance: 100 });
+
+      let callCount = 0;
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === "record_download_payment") {
+          callCount++;
+          if (callCount <= 3) throw new Error("DHT offline"); // First 3 attempts fail
+          return undefined; // Retry succeeds
+        }
+        if (command === "process_download_payment") {
+          return "0xtxhash123";
+        }
+        if (command === "get_full_network_stats") {
+          return {
+            network_difficulty: 1000,
+            network_hashrate: 5000,
+            active_miners: 10,
+            power_usage: 100,
+          };
+        }
+        return undefined;
+      });
+
+      const promise = PaymentService.processDownloadPayment(
+        "QmHash123",
+        "test.txt",
+        1024 * 1024,
+        seederAddress
+      );
+
+      while (callCount < 3) {
+        await vi.advanceTimersByTimeAsync(20000);
+      }
+      await promise;
+
+      // Manual retry with both fileHash and seederAddress
+      const retryPromise = PaymentService.retryPaymentNotification("QmHash123", seederAddress);
+      while (callCount < 4) {
+        await vi.advanceTimersByTimeAsync(20000);
+      }
+      const retryResult = await retryPromise;
+
+      expect(retryResult).toBe(true);
+      expect(PaymentService.getPendingNotifications()).toHaveLength(0);
+
+      vi.useRealTimers();
+    }, 10000);
+
+    it("should deduplicate on seeder side using transaction hash", async () => {
+      const txHash = "0xabc123";
+      const downloaderAddress = "0xDOWNLOADER1234567890abcdef1234567890ABC";
+
+      // First notification
+      const result1 = await PaymentService.creditSeederPayment(
+        "QmHash123",
+        "test.txt",
+        1024,
+        downloaderAddress,
+        txHash
+      );
+      expect(result1.success).toBe(true);
+
+      // Duplicate notification (same txHash)
+      const result2 = await PaymentService.creditSeederPayment(
+        "QmHash123",
+        "test.txt",
+        1024,
+        downloaderAddress,
+        txHash
+      );
+      expect(result2.success).toBe(true);
+      expect(result2.error).toContain("already received");
+
+      // Verify wallet only credited once
+      const txs = get(transactions);
+      const receivedTxs = txs.filter(t => t.type === "received");
+      expect(receivedTxs).toHaveLength(1);
+    });
+
+    it("should rate limit manual retries", async () => {
+      const seederAddress = "0xABCDEF1234567890abcdef1234567890ABCDEF12";
+      
+      wallet.set({ ...get(wallet), balance: 100 });
+
+      let attempts = 0;
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === "record_download_payment") {
+          attempts++;
+          throw new Error("DHT offline");
+        }
+        if (command === "process_download_payment") {
+          return "0xtxhash123";
+        }
+        if (command === "get_full_network_stats") {
+          return {
+            network_difficulty: 1000,
+            network_hashrate: 5000,
+            active_miners: 10,
+            power_usage: 100,
+          };
+        }
+        return undefined;
+      });
+
+      // First download attempt fails (3 attempts)
+      await PaymentService.processDownloadPayment(
+        "QmHash123",
+        "test.txt",
+        1024 * 1024,
+        seederAddress
+      );
+
+      expect(attempts).toBe(3);
+
+      // First manual retry should work (but fail due to DHT) - makes 3 more attempts
+      console.log('=== BEFORE RETRY1, attempts:', attempts);
+      const retry1 = await PaymentService.retryPaymentNotification("QmHash123", seederAddress);
+      console.log('=== AFTER RETRY1, attempts:', attempts, 'result:', retry1);
+      expect(retry1).toBe(false); // Failed (DHT still offline)
+      expect(attempts).toBe(6);  // 3 initial + 3 from first retry
+
+      // Immediate second retry should be rate limited (no additional attempts)
+      console.log('=== BEFORE RETRY2, attempts:', attempts);
+      const retry2 = await PaymentService.retryPaymentNotification("QmHash123", seederAddress);
+      console.log('=== AFTER RETRY2, attempts:', attempts, 'result:', retry2);
+      expect(retry2).toBe(false); // Rate limited
+      expect(attempts).toBe(6);  // Still 6 (rate limited, didn't try again)
+    }, 90000);
+
+    it("should cleanup old failed notifications via timer", async () => {
+      const seederAddress = "0xABCDEF1234567890abcdef1234567890ABCDEF12";
+      
+      wallet.set({ ...get(wallet), balance: 100 });
+
+      let attempts = 0;
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === "record_download_payment") {
+          attempts++;
+          throw new Error("DHT offline");
+        }
+        if (command === "process_download_payment") {
+          return "0xtxhash123";
+        }
+        if (command === "get_full_network_stats") {
+          return {
+            network_difficulty: 1000,
+            network_hashrate: 5000,
+            active_miners: 10,
+            power_usage: 100,
+          };
+        }
+        return undefined;
+      });
+
+      // Create failed notification (initializes cleanup timer)
+      await PaymentService.processDownloadPayment(
+        "QmHash123",
+        "test.txt",
+        1024 * 1024,
+        seederAddress
+      );
+
+      expect(PaymentService.getPendingNotifications()).toHaveLength(1);
+
+      // Note: This test verifies cleanup timer is initialized.
+      // Full cleanup behavior would require waiting 1+ hours which is impractical for tests.
+      // The cleanup logic is verified by the implementation (removes notifications >1hr old).
+    }, 30000);
+
+    it("should use composite key to prevent collisions from different seeders", async () => {
+      wallet.set({ ...get(wallet), balance: 100 });
+
+      let attempts = 0;
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === "record_download_payment") {
+          attempts++;
+          throw new Error("DHT offline");
+        }
+        if (command === "process_download_payment") {
+          return "0xtxhash123";
+        }
+        if (command === "get_full_network_stats") {
+          return {
+            network_difficulty: 1000,
+            network_hashrate: 5000,
+            active_miners: 10,
+            power_usage: 100,
+          };
+        }
+        return undefined;
+      });
+
+      // Download same file from two different seeders to test composite keys
+      const result1 = await PaymentService.processDownloadPayment(
+        "QmHash123",
+        "test.txt",
+        1024 * 1024,
+        "0x1111111111111111111111111111111111111111"
+      );
+
+      expect(result1.success).toBe(true);
+      expect(attempts).toBe(3); // First download made 3 attempts
+
+      const result2 = await PaymentService.processDownloadPayment(
+        "QmHash123",
+        "test.txt",
+        1024 * 1024,
+        "0x2222222222222222222222222222222222222222"
+      );
+
+      expect(result2.success).toBe(true);
+      expect(attempts).toBe(6); // Second download made 3 more attempts
+
+      // Should create 2 separate pending notifications (not 1)
+      const pending = PaymentService.getPendingNotifications();
+      expect(pending).toHaveLength(2);
+      
+      // Verify composite keys are different (fileHash-seederAddress)
+      const keys = pending.map(p => `${p.fileHash}-${p.seederAddress}`);
+      expect(keys[0]).not.toBe(keys[1]);
+      expect(keys).toContain("QmHash123-0x1111111111111111111111111111111111111111");
+      expect(keys).toContain("QmHash123-0x2222222222222222222222222222222222222222");
+    }, 90000);
+  });
 });

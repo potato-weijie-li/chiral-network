@@ -138,6 +138,12 @@ export interface Transaction {
   fee?: number; // Total fee in Wei
   timestamp?: number;
   error_message?: string;
+  // Payment notification delivery tracking
+  metadata?: {
+    notificationDelivered?: boolean;
+    notificationError?: string;
+    lastNotificationAttempt?: number;
+  };
 }
 
 export interface BlacklistEntry {
