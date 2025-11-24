@@ -66,6 +66,8 @@ PeerDiscovery Message {
 
 ### 2. DHT Protocol (Kademlia)
 
+> **Note**: For detailed information on DHT stability challenges, especially regarding private/public IP address issues and NAT traversal, see [DHT Stability](dht-stability.md).
+
 #### Node ID Generation
 
 ```

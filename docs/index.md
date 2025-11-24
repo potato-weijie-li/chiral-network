@@ -25,6 +25,8 @@ Welcome to the Chiral Network documentation. This directory contains comprehensi
 ### Feature Documentation
 
 - [NAT Traversal & Relay](nat-traversal.md) - AutoNAT v2, Circuit Relay v2, and connectivity solutions
+- [DHT Stability](dht-stability.md) - DHT stability challenges and private/public IP address issues
+- [Bootstrap Stability](bootstrap-stability.md) - Bootstrap node stability and health monitoring
 - [File Sharing](file-sharing.md) - Upload/download workflows, encryption, and versioning
 - [Whole-File Pause & Resume Baseline](download-restart.md) - HTTP baseline with restart-safe metadata and testing plan
 - [Reputation System](reputation.md) - Peer reputation, trust levels, and analytics

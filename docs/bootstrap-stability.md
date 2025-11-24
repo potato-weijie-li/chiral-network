@@ -4,6 +4,8 @@
 
 **Status:** Planning Phase | **Assigned:** Team Potato | **Date:** 2024-11-10
 
+> **Related Documentation**: For comprehensive coverage of DHT stability issues including private/public IP address problems, see [DHT Stability](dht-stability.md).
+
 ---
 
 ## What Changed

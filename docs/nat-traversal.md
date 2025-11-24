@@ -203,6 +203,7 @@ After deploying a relay, configure it in your Chiral Network app:
 
 ## See Also
 
+- [DHT Stability](dht-stability.md) - DHT stability and private/public IP issues
 - [Network Protocol](network-protocol.md) - P2P networking details
 - [Security & Privacy](security-privacy.md) - Privacy features
 - [Deployment Guide](deployment-guide.md) - Production setup
