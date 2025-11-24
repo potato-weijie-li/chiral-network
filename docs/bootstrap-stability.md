@@ -146,120 +146,198 @@ These addresses are **not routable** on the public internet:
 
 ---
 
-## Part 3: Circuit Relay v2 Solution
+## Part 3: Proposed Solutions (Relay-Free)
 
-### How It Works
+### Goal: Avoid Relays
 
-Circuit Relay v2 enables NAT'd peers to be reachable through public relay nodes:
+Relays add complexity, latency, and infrastructure costs. We propose **direct NAT traversal** methods that establish peer-to-peer connections without intermediate relay servers.
 
+### Solution A: Hole Punching (DCUtR) - RECOMMENDED
+
+**How It Works:**
 ```
-NAT'd Node A → Public Relay → Node B
-              (encrypted tunnel)
-```
-
-### Circuit Relay Address Format
-
-```
-/ip4/relay.chiral.network/tcp/4001/p2p/QmRelayPeer.../p2p-circuit/p2p/QmNATdPeer...
-│                                    │                │           │
-│                                    │                │           └─ Target peer
-│                                    │                └─ Circuit marker
-│                                    └─ Relay peer ID
-└─ Relay public address (REACHABLE!)
+1. Both peers connect to bootstrap (coordination only)
+2. Exchange external IP:port via DHT/signaling
+3. Simultaneously send packets to each other
+4. NAT "punches hole" allowing direct connection
 ```
 
-### Connection Flow
-
-**1. NAT'd Node Setup:**
 ```
-Node A (Behind NAT):
-1. Connects to bootstrap node
-2. Discovers relay-capable peers
-3. Requests relay reservation
-4. Gets relay circuit address
-```
-
-**2. File Announcement:**
-```
-Node A announces file:
-  File: QmFileHash...
-  Provider: 12D3KooWxyz...
-  Reachable via: /ip4/relay.example.com/.../p2p-circuit/...
+Node A (NAT)          Bootstrap           Node B (NAT)
+    |                     |                    |
+    |---> Get external IP |                    |
+    |<--- 203.0.113.5:4001|                    |
+    |                     |<--- Get external IP|
+    |                     |--> 198.51.100.7:4002
+    |                     |                    |
+    |======== HOLE PUNCH (simultaneous) =======|
+    |<------------- DIRECT CONNECTION -------->|
 ```
 
-**3. Remote Peer Connects:**
+**Success Rate:** 70-80% of NAT types
+**Latency:** Direct (no relay overhead)
+**Implementation:** libp2p DCUtR protocol already supported
+
+### Solution B: UPnP/NAT-PMP Port Mapping
+
+**How It Works:**
 ```
-Node B:
-1. Queries DHT for file → Gets provider ID
-2. Discovers relay circuit address via identify protocol
-3. Connects through relay → SUCCESS ✅
+1. Node requests router to open external port
+2. Router maps external:4001 → internal:4001
+3. Node announces public IP:port to DHT
+4. Peers connect directly
 ```
 
-### Key Properties
+```rust
+// Proposed implementation
+async fn request_port_mapping() -> Result<SocketAddr> {
+    // Try UPnP first
+    if let Ok(gateway) = igd::search_gateway().await {
+        gateway.add_port(TCP, 4001, local_addr, 3600, "chiral")?;
+        return Ok(gateway.get_external_ip()? + ":4001");
+    }
+    // Fallback to NAT-PMP
+    natpmp::request_mapping(4001)?
+}
+```
 
-- ✅ **Globally reachable**: Uses relay's public IP
-- ✅ **NAT-proof**: No direct connection needed
-- ✅ **End-to-end encrypted**: Relay cannot read content
-- ✅ **DHT-compatible**: Can be stored and distributed
+**Success Rate:** 60-70% of home routers support UPnP
+**Latency:** Direct connection
+**Requirement:** Router must have UPnP enabled
+
+### Solution C: STUN-Based Discovery
+
+**How It Works:**
+```
+1. Node sends request to STUN server
+2. STUN server returns observed external IP:port
+3. Node announces this address to DHT
+4. Works if NAT preserves port mapping
+```
+
+```
+Node A          STUN Server
+    |               |
+    |---> Request --|
+    |<-- Your external IP is 203.0.113.5:4001
+    |
+    |---> Announce to DHT: 203.0.113.5:4001
+```
+
+**Success Rate:** Works for ~50% of NAT types (cone NATs)
+**Cost:** Only need lightweight STUN server (not relay)
+**Note:** STUN only discovers address; doesn't relay traffic
+
+### Solution Comparison
+
+| Method | Success Rate | Latency | Infrastructure | Recommended |
+|--------|--------------|---------|----------------|-------------|
+| Hole Punching (DCUtR) | 70-80% | Direct | Bootstrap only | ✅ Primary |
+| UPnP/NAT-PMP | 60-70% | Direct | None | ✅ Auto-enable |
+| STUN Discovery | 50% | Direct | STUN server | ✅ Fallback |
+| Circuit Relay | 100% | +50-100ms | Relay servers | ⚠️ Last resort |
+
+### Proposed Architecture (Relay-Free)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Connection Strategy                     │
+├─────────────────────────────────────────────────────────┤
+│  1. Try UPnP/NAT-PMP port mapping                        │
+│     ↓ (if fails)                                         │
+│  2. Try STUN to discover external address                │
+│     ↓ (if symmetric NAT)                                 │
+│  3. Try DCUtR hole punching                              │
+│     ↓ (if all fail - rare)                               │
+│  4. Fall back to relay (last resort only)                │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Part 4: Current Implementation
+## Part 4: Implementation Details
 
 ### Private IP Filtering
 
-The network filters out unreachable addresses from relay candidates:
+The network filters out unreachable private addresses:
 
 ```rust
 // src-tauri/src/dht.rs
 fn ma_plausibly_reachable(ma: &Multiaddr) -> bool {
-    // Relay paths are always allowed
-    if ma.iter().any(|p| matches!(p, Protocol::P2pCircuit)) {
-        return true;
-    }
-    
     if let Some(Protocol::Ip4(v4)) = ma.iter().find(|p| matches!(p, Protocol::Ip4(_))) {
         // Reject loopback and private addresses
         return !v4.is_loopback() && !v4.is_private();
     }
-    
     false
 }
 ```
 
-**Applied to:**
-- Relay candidate selection
-- Bootstrap node validation
-- AutoNAT server configuration
-
 ### AutoNAT v2 - Detecting Reachability
 
-AutoNAT detects whether a node is publicly reachable or behind NAT:
+AutoNAT detects whether a node is publicly reachable:
 
 ```
 Node A:
 1. Observes own addresses via identify protocol
 2. Asks remote peers to dial back
-3. If dialback succeeds → Public
-4. If dialback fails → Private (behind NAT)
+3. If dialback succeeds → Public (use direct address)
+4. If dialback fails → Try hole punching
 ```
 
-**Note**: AutoNAT only detects NAT status - it doesn't provide traversal.
+### Proposed: UPnP Integration
 
-### Implemented Features
+```rust
+// New module: src-tauri/src/upnp.rs
+pub async fn setup_port_mapping(port: u16) -> Result<Option<SocketAddr>> {
+    // 1. Discover gateway
+    let gateway = igd::search_gateway(Default::default()).await?;
+    
+    // 2. Get local address
+    let local_ip = get_local_ip()?;
+    let local_addr = SocketAddrV4::new(local_ip, port);
+    
+    // 3. Request port mapping (1 hour lease)
+    gateway.add_port(
+        PortMappingProtocol::TCP,
+        port,
+        local_addr,
+        3600,
+        "Chiral Network"
+    )?;
+    
+    // 4. Return external address
+    let external_ip = gateway.get_external_ip()?;
+    Ok(Some(SocketAddr::new(external_ip.into(), port)))
+}
+```
 
-**NAT Traversal:**
-- ✅ Circuit Relay v2 (client + server mode)
-- ✅ AutoRelay for automatic relay discovery
-- ✅ AutoNAT v2 for reachability detection
-- ✅ DCUtR for hole punching
-- ✅ Private address filtering
+### Proposed: Enhanced Hole Punching
 
-**DHT Operations:**
-- ✅ Kademlia DHT with file metadata
-- ✅ Provider record announcements
-- ✅ Periodic heartbeat refresh
-- ✅ Bootstrap node connectivity
+```rust
+// Enhance existing DCUtR with retry logic
+pub async fn attempt_hole_punch(peer_id: PeerId) -> Result<()> {
+    for attempt in 1..=3 {
+        match dcutr_connect(peer_id).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                warn!("Hole punch attempt {} failed: {}", attempt, e);
+                tokio::time::sleep(Duration::from_millis(500 * attempt)).await;
+            }
+        }
+    }
+    Err(Error::HolePunchFailed)
+}
+```
+
+### Current vs Proposed Features
+
+| Feature | Current | Proposed |
+|---------|---------|----------|
+| Circuit Relay | ✅ Primary | ⚠️ Last resort |
+| DCUtR Hole Punching | ✅ Available | ✅ Primary method |
+| UPnP/NAT-PMP | ❌ Not implemented | ✅ Auto-enable |
+| STUN Discovery | ❌ Not implemented | ✅ Add support |
+| Private IP Filtering | ✅ Implemented | ✅ Keep |
 
 ---
 
@@ -267,34 +345,37 @@ Node A:
 
 ### For Users Behind NAT
 
-**Recommended Settings:**
+**Recommended Settings (Relay-Free):**
 ```toml
 [network]
 enable_autonat = true
-enable_autorelay = true
-preferred_relays = [
-    "/ip4/relay1.chiral.network/tcp/4001/p2p/12D3KooW...",
-    "/ip4/relay2.chiral.network/tcp/4001/p2p/12D3KooW...",
+enable_upnp = true           # NEW: Auto port mapping
+enable_hole_punching = true  # NEW: DCUtR priority
+stun_servers = [             # NEW: For address discovery
+    "stun:stun.l.google.com:19302",
+    "stun:stun.cloudflare.com:3478",
 ]
+
+# Relay disabled by default
+enable_autorelay = false
 ```
 
 **CLI:**
 ```bash
 chiral-network \
-  --enable-autorelay \
-  --relay /ip4/relay.chiral.network/tcp/4001/p2p/12D3KooW...
+  --enable-upnp \
+  --enable-hole-punching \
+  --stun-server stun.l.google.com:19302
 ```
 
-### For Public Nodes (Relay Server)
+### For Advanced Users
 
-Help the network by running as a relay:
+If hole punching fails consistently:
 ```toml
 [network]
-enable_relay_server = true
-
-[relay_server]
-max_reservations = 128
-max_circuits_per_peer = 16
+# Enable relay as fallback only
+enable_autorelay = true
+relay_mode = "fallback"  # Only use if direct fails
 ```
 
 ---
@@ -322,20 +403,28 @@ chiral-cli network bootstrap-health
 ```bash
 chiral-cli network peer-info <peer-id>
 chiral-cli network nat-status
-chiral-cli network relay-status
+chiral-cli network upnp-status     # NEW
+chiral-cli network hole-punch-test  # NEW
 ```
 
 **Solutions:**
-1. Verify provider has active relay reservation
-2. Check your relay connectivity
-3. Try adding more relay nodes
+1. Check if UPnP port mapping succeeded
+2. Verify hole punching is enabled
+3. Check NAT type (symmetric NAT may need STUN)
+4. Try manual port forwarding
 
-### "Relay reservation failed"
+### "Hole punching failed"
+
+**Common Causes:**
+- Symmetric NAT on both sides
+- Firewall blocking UDP
+- Router doesn't support hairpin NAT
 
 **Solutions:**
-1. Verify relay nodes are public and reachable
-2. Check relay circuit limits
-3. Try different relay nodes
+1. Enable UPnP on router
+2. Manually forward port 4001
+3. Check firewall allows UDP traffic
+4. As last resort: enable relay fallback
 
 ---
 
@@ -360,13 +449,16 @@ chiral-cli network relay-status
 - [ ] Systemd timer/service
 - [ ] Monitoring alerts
 
-### Phase 5: NAT Traversal
-- [ ] Circuit Relay v2 integration
-- [ ] AutoNAT v2 integration
-- [ ] Private IP filtering validation
+### Phase 5: Relay-Free NAT Traversal (NEW)
+- [ ] UPnP/NAT-PMP port mapping module
+- [ ] STUN server integration
+- [ ] Enhanced DCUtR hole punching with retry
+- [ ] Connection strategy: UPnP → STUN → DCUtR → Relay
+- [ ] Relay demoted to fallback-only mode
 
 ### Phase 6: Testing & Deploy
 - [ ] All stability tests passing
+- [ ] NAT traversal success rate >80%
 - [ ] Load test 50+ concurrent users
 - [ ] Documentation updates
 - [ ] Production deployment
@@ -380,6 +472,7 @@ chiral-cli network relay-status
 | `Network.svelte` | ~50 lines | Timeout, health loop, verification |
 | `bootstrap.rs` | ~150 lines | Health struct, Tauri commands |
 | `dht.rs` | ~30 lines | Routing table, address filtering |
+| `upnp.rs` | ~100 lines | NEW: UPnP/NAT-PMP port mapping |
 | `peerEventService.ts` | ~20 lines | Discovery events |
 | Server scripts | ~100 lines | Auto-recovery, systemd |
 
@@ -392,22 +485,27 @@ chiral-cli network relay-status
 2. Private IPs in DHT → 60-70% of users undiscoverable
 3. No verification → Peers can't find each other
 
-**Solutions:**
+**Proposed Solutions (Relay-Free):**
 1. Timeout + health monitoring + auto-recovery
-2. Circuit Relay v2 with private IP filtering
+2. Direct NAT traversal: UPnP → STUN → Hole Punching
 3. 6-step discovery verification
+4. Relay as last resort only (not default)
 
-**Outcome:**
+**Expected Outcome:**
 - 95%+ connection success rate
 - <2min bootstrap downtime
-- NAT'd users fully discoverable via relay
-- Guaranteed bidirectional peer visibility
+- 80%+ NAT'd users connect directly (no relay)
+- Reduced infrastructure costs (no relay servers)
+- Lower latency (direct connections)
 
 ---
 
 ## References
 
-- [libp2p Circuit Relay](https://docs.libp2p.io/concepts/nat/circuit-relay/)
+- [libp2p DCUtR (Hole Punching)](https://github.com/libp2p/specs/blob/master/relay/dcutr.md)
+- [UPnP IGD Protocol](https://en.wikipedia.org/wiki/Internet_Gateway_Device_Protocol)
+- [STUN Protocol (RFC 5389)](https://tools.ietf.org/html/rfc5389)
+- [NAT-PMP (RFC 6886)](https://tools.ietf.org/html/rfc6886)
 - [AutoNAT v2 Specification](https://github.com/libp2p/specs/blob/master/autonat/README.md)
 - [Kademlia DHT](https://docs.libp2p.io/concepts/fundamentals/protocols/#kademlia)
 - [RFC 1918 - Private IP Addresses](https://tools.ietf.org/html/rfc1918)
