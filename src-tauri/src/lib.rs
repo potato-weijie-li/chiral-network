@@ -42,3 +42,6 @@ pub mod reputation;
 
 // Logger module for file-based logging
 pub mod logger;
+
+// Headless node module for standalone binary
+pub mod node;

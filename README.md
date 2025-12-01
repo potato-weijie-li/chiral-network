@@ -32,6 +32,21 @@ npm run tauri:dev
 npm run tauri:build
 ```
 
+### Headless Node (Server Deployment)
+
+For running a standalone node without the GUI (useful for servers, containers, systemd services):
+
+```bash
+# Build headless binary
+cargo build --manifest-path src-tauri/Cargo.toml --bin chiral-node --release
+
+# Run the node
+./target/release/chiral-node --help
+./target/release/chiral-node --dht-port 4001
+```
+
+See [src-tauri/README-CHIRAL-NODE.md](src-tauri/README-CHIRAL-NODE.md) for detailed usage and systemd service configuration.
+
 ## 📚 Documentation
 
 ### Getting Started
