@@ -52,7 +52,6 @@ cargo build --manifest-path src-tauri/Cargo.toml --bin chiral-node --release
 |--------|-------------|---------|
 | `-c, --config <PATH>` | Path to configuration file | None |
 | `-v, --verbose` | Increase logging verbosity | Info level |
-| `--no-daemon` | Run in foreground | true |
 | `--dht-port <PORT>` | DHT port to listen on | 4001 |
 | `--bootstrap <ADDR>` | Bootstrap nodes (repeatable) | None |
 | `--show-multiaddr` | Show node's multiaddr | false |
