@@ -29,6 +29,46 @@ struct Args {
     /// Run in foreground (default). Use --no-daemon to explicitly disable daemon mode.
     #[arg(long)]
     no_daemon: bool,
+
+    /// DHT port to listen on
+    #[arg(long, default_value = "4001")]
+    dht_port: u16,
+
+    /// Bootstrap nodes to connect to (can be specified multiple times)
+    #[arg(long)]
+    bootstrap: Vec<String>,
+
+    /// Enable geth node
+    #[arg(long)]
+    enable_geth: bool,
+
+    /// Geth data directory
+    #[arg(long, default_value = "./bin/geth-data")]
+    geth_data_dir: String,
+
+    /// Miner address for geth
+    #[arg(long)]
+    miner_address: Option<String>,
+
+    /// Generate multiaddr for this node (shows the address others can connect to)
+    #[arg(long)]
+    show_multiaddr: bool,
+
+    /// Secret for generating consistent peer ID
+    #[arg(long)]
+    secret: Option<String>,
+
+    /// Run in bootstrap mode
+    #[arg(long)]
+    is_bootstrap: bool,
+
+    /// Disable AutoNAT reachability probes
+    #[arg(long)]
+    disable_autonat: bool,
+
+    /// Enable relay server mode
+    #[arg(long)]
+    enable_relay: bool,
 }
 
 /// Initialize tracing/logging based on verbosity level
