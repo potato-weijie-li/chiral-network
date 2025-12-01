@@ -85,7 +85,8 @@ pub async fn run(config: NodeConfig) -> NodeResult<()> {
         None, // previous_autorelay_enabled
         None, // previous_autorelay_disabled
     )
-    .await?;
+    .await
+    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.to_string().into() })?;
 
     let peer_id = dht_service.get_peer_id().await;
     info!("Node started with peer ID: {}", peer_id);
