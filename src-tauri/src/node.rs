@@ -104,7 +104,10 @@ pub async fn run(config: NodeConfig) -> NodeResult<()> {
         }
     }
 
-    // Keep the DHT service alive in an Arc for the duration of the node
+    // IMPORTANT: The DhtService must be kept alive in an Arc for the entire node lifetime.
+    // The DhtService spawns background tasks for event handling, peer discovery, and DHT
+    // operations. If the service is dropped, these background tasks will stop running.
+    // The underscore prefix silences the "unused variable" warning while keeping ownership.
     let _dht_arc = Arc::new(dht_service);
     
     info!("Node is running. Waiting for shutdown signal...");
