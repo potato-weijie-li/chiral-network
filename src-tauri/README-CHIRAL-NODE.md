@@ -55,9 +55,6 @@ cargo build --manifest-path src-tauri/Cargo.toml --bin chiral-node --release
 | `--no-daemon` | Run in foreground | true |
 | `--dht-port <PORT>` | DHT port to listen on | 4001 |
 | `--bootstrap <ADDR>` | Bootstrap nodes (repeatable) | None |
-| `--enable-geth` | Enable geth node | false |
-| `--geth-data-dir <PATH>` | Geth data directory | ./bin/geth-data |
-| `--miner-address <ADDR>` | Miner address for geth | None |
 | `--show-multiaddr` | Show node's multiaddr | false |
 | `--secret <SECRET>` | Secret for consistent peer ID | None |
 | `--is-bootstrap` | Run in bootstrap mode | false |
