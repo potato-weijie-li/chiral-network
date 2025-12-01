@@ -131,8 +131,41 @@ async fn main() {
     info!("Starting chiral-node (headless)");
     info!("Config file: {:?}", args.config);
 
-    // Wait for shutdown signal
-    shutdown_signal().await;
+    // Build node configuration from CLI args
+    let node_config = NodeConfig {
+        dht_port: args.dht_port,
+        bootstrap_nodes: args.bootstrap.clone(),
+        secret: args.secret.clone(),
+        is_bootstrap: args.is_bootstrap,
+        enable_autonat: !args.disable_autonat,
+        autonat_probe_interval_secs: 30,
+        enable_relay: args.enable_relay,
+        enable_autorelay: true,
+        preferred_relays: Vec::new(),
+    };
+
+    // Display multiaddr if requested
+    if args.show_multiaddr {
+        if let Some(ip) = node::get_local_ip() {
+            info!("🔗 Expected multiaddr: /ip4/{}/tcp/{}/p2p/<peer_id>", ip, args.dht_port);
+        }
+    }
+
+    // Start node services with shutdown signal handling
+    tokio::select! {
+        result = node::run(node_config) => {
+            match result {
+                Ok(_) => info!("Node services completed"),
+                Err(e) => {
+                    error!("Node services failed: {:?}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        _ = shutdown_signal() => {
+            info!("Shutting down node services...");
+        }
+    }
 
     info!("chiral-node shutdown complete");
     process::exit(0);
