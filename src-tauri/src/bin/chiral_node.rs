@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::process;
 
 use clap::Parser;
+use tracing::{info, Level};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// Chiral Node - Headless P2P File Sharing Node
 #[derive(Parser, Debug)]
@@ -28,12 +30,34 @@ struct Args {
     no_daemon: bool,
 }
 
+/// Initialize tracing/logging based on verbosity level
+fn init_logging(verbose: u8) {
+    let level = match verbose {
+        0 => Level::INFO,
+        1 => Level::DEBUG,
+        _ => Level::TRACE,
+    };
+
+    let filter = EnvFilter::from_default_env()
+        .add_directive(format!("chiral_network={}", level).parse().unwrap())
+        .add_directive(format!("chiral_node={}", level).parse().unwrap())
+        .add_directive("libp2p=warn".parse().unwrap())
+        .add_directive("libp2p_kad=info".parse().unwrap());
+
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(filter)
+        .init();
+}
+
 fn main() {
     let args = Args::parse();
 
-    println!("chiral-node starting...");
-    println!("Config: {:?}", args.config);
-    println!("Verbose level: {}", args.verbose);
+    // Initialize logging
+    init_logging(args.verbose);
+
+    info!("Starting chiral-node (headless)");
+    info!("Config file: {:?}", args.config);
 
     process::exit(0);
 }
