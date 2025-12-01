@@ -64,6 +64,9 @@ pub async fn run(config: NodeConfig) -> NodeResult<()> {
     };
 
     // Start DHT service
+    // Note: Bootstrap nodes are used as AutoNAT servers by default since they are
+    // well-connected peers that can verify our reachability. This follows the same
+    // pattern used in the Tauri frontend and headless.rs.
     let dht_service = DhtService::new(
         config.dht_port,
         config.bootstrap_nodes.clone(),
@@ -71,7 +74,7 @@ pub async fn run(config: NodeConfig) -> NodeResult<()> {
         config.is_bootstrap,
         enable_autonat,
         probe_interval,
-        config.bootstrap_nodes.clone(), // autonat_servers
+        config.bootstrap_nodes.clone(), // Use bootstrap nodes as AutoNAT servers
         None, // proxy_address
         None, // file_transfer_service
         None, // chunk_manager
