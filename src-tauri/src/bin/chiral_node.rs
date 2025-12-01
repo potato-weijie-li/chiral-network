@@ -39,18 +39,6 @@ struct Args {
     #[arg(long)]
     bootstrap: Vec<String>,
 
-    /// Enable geth node
-    #[arg(long)]
-    enable_geth: bool,
-
-    /// Geth data directory
-    #[arg(long, default_value = "./bin/geth-data")]
-    geth_data_dir: String,
-
-    /// Miner address for geth
-    #[arg(long)]
-    miner_address: Option<String>,
-
     /// Generate multiaddr for this node (shows the address others can connect to)
     #[arg(long)]
     show_multiaddr: bool,
