@@ -1,6 +1,6 @@
 # chiral-node (Headless)
 
-A standalone headless binary for running Chiral Network P2P/DHT/mining/network services without depending on Tauri or the frontend. Suitable for server/service deployments (systemd, containers).
+A standalone headless binary for running Chiral Network P2P/DHT/network services without depending on Tauri or the frontend. Suitable for server/service deployments (systemd, containers).
 
 ## Features
 
