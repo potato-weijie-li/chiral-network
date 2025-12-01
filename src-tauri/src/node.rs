@@ -101,7 +101,8 @@ pub async fn run(config: NodeConfig) -> NodeResult<()> {
         }
     }
 
-    let dht_arc = Arc::new(dht_service);
+    // Keep the DHT service alive in an Arc for the duration of the node
+    let _dht_arc = Arc::new(dht_service);
     
     info!("Node is running. Waiting for shutdown signal...");
 
