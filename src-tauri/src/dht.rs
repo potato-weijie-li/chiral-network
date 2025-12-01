@@ -4535,9 +4535,6 @@ async fn handle_kademlia_event(
                                         }
                                     }
                                 }
-                                        }
-                                    }
-                                }
 
                                 if !dial_success {
                                     info!(
