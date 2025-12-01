@@ -6,9 +6,10 @@
 use std::path::PathBuf;
 use std::process;
 
+use chiral_network::node::{self, NodeConfig};
 use clap::Parser;
 use tokio::signal;
-use tracing::{info, Level};
+use tracing::{error, info, Level};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// Chiral Node - Headless P2P File Sharing Node
