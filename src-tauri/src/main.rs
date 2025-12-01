@@ -54,6 +54,15 @@ use crate::commands::proxy::{
     proxy_echo, proxy_remove, ProxyNode,
 };
 use crate::commands::network::get_full_network_stats;
+use crate::commands::reputation::{
+    get_reputation_config, update_reputation_config, publish_transaction_verdict,
+    fetch_transaction_verdicts, sign_transaction_message, verify_transaction_message,
+    get_wallet_balance, blacklist_peer_manual, blacklist_peer_remove,
+    blacklist_peer_check, blacklist_peer_list, blacklist_cleanup_expired,
+    calculate_peer_score, get_cached_score, set_cached_score,
+    clear_reputation_cache, cleanup_reputation_cache, submit_complaint_onchain,
+    ReputationState,
+};
 use crate::bandwidth::BandwidthController;
 use crate::stream_auth::{
     AuthMessage, HmacKeyExchangeConfirmation, HmacKeyExchangeRequest, HmacKeyExchangeResponse,
@@ -5432,6 +5441,7 @@ fn main() {
             // Download restart service (will be initialized in setup)
             download_restart: Mutex::new(None),
         })
+        .manage(ReputationState::new())
         .invoke_handler(tauri::generate_handler![
             create_chiral_account,
             import_chiral_account,
@@ -5613,7 +5623,26 @@ fn main() {
             start_download_restart,
             pause_download_restart,
             resume_download_restart,
-            get_download_status_restart
+            get_download_status_restart,
+            // Reputation system commands
+            get_reputation_config,
+            update_reputation_config,
+            publish_transaction_verdict,
+            fetch_transaction_verdicts,
+            sign_transaction_message,
+            verify_transaction_message,
+            get_wallet_balance,
+            blacklist_peer_manual,
+            blacklist_peer_remove,
+            blacklist_peer_check,
+            blacklist_peer_list,
+            blacklist_cleanup_expired,
+            calculate_peer_score,
+            get_cached_score,
+            set_cached_score,
+            clear_reputation_cache,
+            cleanup_reputation_cache,
+            submit_complaint_onchain
         ])
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_os::init())
