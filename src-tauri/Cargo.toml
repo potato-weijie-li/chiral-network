@@ -13,6 +13,10 @@ name = "chiral_network"
 path = "src/lib.rs"
 crate-type = ["lib"]
 
+[[bin]]
+name = "chiral-node"
+path = "src/bin/chiral_node.rs"
+
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
 
