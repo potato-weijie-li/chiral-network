@@ -27,10 +27,6 @@ struct Args {
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 
-    /// Run in foreground (default). Use --no-daemon to explicitly disable daemon mode.
-    #[arg(long)]
-    no_daemon: bool,
-
     /// DHT port to listen on
     #[arg(long, default_value = "4001")]
     dht_port: u16,
