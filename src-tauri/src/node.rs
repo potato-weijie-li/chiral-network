@@ -3,10 +3,9 @@
 //! This module provides the core functionality for running a Chiral Network
 //! node without the Tauri frontend, suitable for server deployments.
 
-use crate::dht::{models::FileMetadata, DhtService};
-use crate::file_transfer::FileTransferService;
+use crate::dht::DhtService;
 use std::{sync::Arc, time::Duration};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 /// Configuration for the headless node
 #[derive(Debug, Clone)]
