@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process;
 
 use clap::Parser;
+use tokio::signal;
 use tracing::{info, Level};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -50,7 +51,37 @@ fn init_logging(verbose: u8) {
         .init();
 }
 
-fn main() {
+/// Wait for shutdown signal (Ctrl+C or SIGTERM)
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            info!("Received Ctrl+C, initiating shutdown...");
+        }
+        _ = terminate => {
+            info!("Received SIGTERM, initiating shutdown...");
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
 
     // Initialize logging
@@ -59,5 +90,9 @@ fn main() {
     info!("Starting chiral-node (headless)");
     info!("Config file: {:?}", args.config);
 
+    // Wait for shutdown signal
+    shutdown_signal().await;
+
+    info!("chiral-node shutdown complete");
     process::exit(0);
 }
