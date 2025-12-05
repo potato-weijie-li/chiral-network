@@ -1749,5 +1749,7 @@
       "copyError": "{label} कॉपी करने में विफल",
       "exported": "लेनदेन निर्यात किया गया"
     }
-  }
+  },
+  "storage.locationSuccess": "स्टोरेज स्थान सेट किया गया: {path}",
+  "storage.locationError": "स्टोरेज स्थान सेट करने में विफल"
 }

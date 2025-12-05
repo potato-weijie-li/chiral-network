@@ -1748,5 +1748,7 @@
       "copyError": "{label} কপি করতে ব্যর্থ",
       "exported": "লেনদেন এক্সপোর্ট করা হয়েছে"
     }
-  }
+  },
+  "storage.locationSuccess": "স্টোরেজ অবস্থান সেট করা হয়েছে: {path}",
+  "storage.locationError": "স্টোরেজ অবস্থান সেট করতে ব্যর্থ"
 }

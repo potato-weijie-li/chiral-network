@@ -1749,5 +1749,7 @@
       "copyError": "Falha ao copiar {label}",
       "exported": "Transação exportada"
     }
-  }
+  },
+  "storage.locationSuccess": "Local de armazenamento definido para: {path}",
+  "storage.locationError": "Falha ao definir o local de armazenamento"
 }

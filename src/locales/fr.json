@@ -19,7 +19,6 @@
   "settings.diagnostics.copyFailed": "Échec de la copie",
   "settings.diagnostics.resultsTitle": "Résultats",
   "badges.unsaved": "Modifications non enregistrées",
-
   "storage.title": "Stockage",
   "storage.location": "Emplacement de stockage",
   "storage.locationPick": "Choisir un emplacement de stockage",
@@ -29,7 +28,6 @@
   "storage.maxSize": "Taille maximale de stockage (Go)",
   "storage.cleanupThreshold": "Seuil de nettoyage automatique (%)",
   "storage.enableCleanup": "Activer le nettoyage automatique lorsque le stockage est plein",
-
   "network": {
     "title": "Réseau",
     "subtitle": "Surveillez la santé du réseau et découvrez des pairs",
@@ -314,7 +312,6 @@
       }
     }
   },
-
   "download": {
     "title": "Télécharger des fichiers",
     "subtitle": "Téléchargez des fichiers depuis le réseau Chiral",
@@ -438,12 +435,10 @@
     "currentProtocol": "Protocole actuel",
     "changeProtocol": "Changer de protocole"
   },
-
   "regions.usEast": "US East",
   "regions.usWest": "US West",
   "regions.euWest": "Europe West",
   "regions.apac": "Asia Pacific",
-
   "language.title": "Langue",
   "language.select": "Sélectionner la langue",
   "language.english": "English",
@@ -456,7 +451,6 @@
   "language.french": "Français",
   "language.bengali": "বাংলা",
   "language.arabic": "العربية",
-
   "nav": {
     "menu": "Menu",
     "download": "Télécharger",
@@ -477,7 +471,6 @@
     "collapseSidebar": "Réduire la barre latérale",
     "closeSidebarMenu": "Fermer le menu latéral"
   },
-
   "privacy.title": "Confidentialité et sécurité",
   "privacy.enableProxy": "Activer le routage via proxy pour l’anonymat",
   "privacy.proxyAddress": "Adresse du proxy",
@@ -486,13 +479,11 @@
   "privacy.shareAnalytics": "Partager des statistiques d’utilisation anonymisées",
   "privacy.autoLockWallet": "Verrouiller automatiquement le portefeuille après inactivité",
   "privacy.autoLockWalletHint": "Vous déconnecte automatiquement après une heure sans activité.",
-
   "notifications.title": "Notifications",
   "notifications.enable": "Activer les notifications de bureau",
   "notifications.notifyComplete": "Notifier lorsque les téléchargements sont terminés",
   "notifications.notifyError": "Notifier en cas d’erreurs",
   "notifications.soundAlerts": "Activer les alertes sonores",
-
   "advanced.title": "Avancé",
   "advanced.chunkSize": "Taille des blocs (Ko)",
   "advanced.cacheSize": "Taille du cache (Mo)",
@@ -509,15 +500,12 @@
   "advanced.exportSuccess": "Paramètres exportés dans le dossier de téléchargement de votre navigateur.",
   "advanced.importSuccess": "Paramètres importés avec succès.",
   "advanced.importError": "Fichier JSON invalide. Veuillez sélectionner une exportation valide.",
-
   "actions.resetDefaults": "Réinitialiser les valeurs par défaut",
   "actions.cancel": "Annuler",
   "actions.save": "Enregistrer les paramètres",
   "actions.confirm": "Confirmer la réinitialisation",
-
   "confirm.title": "Êtes-vous sûr ?",
   "confirm.resetBody": "Tous les paramètres seront réinitialisés à leurs valeurs par défaut. Cette action sera enregistrée immédiatement.",
-
   "validation.min": "{label} doit être ≥ {min}.",
   "validation.between": "{label} doit être compris entre {min} et {max}.",
   "button": {
@@ -1760,5 +1748,7 @@
       "copyError": "Impossible de copier {label}",
       "exported": "Transaction exportée"
     }
-  }
+  },
+  "storage.locationSuccess": "Emplacement de stockage défini sur : {path}",
+  "storage.locationError": "Échec de la définition de l'emplacement de stockage"
 }
