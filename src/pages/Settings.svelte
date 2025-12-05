@@ -710,6 +710,11 @@
             'Set storage path',
             backendError instanceof Error ? backendError.message : String(backendError)
           );
+          // Show warning to user that backend save failed
+          showToast(
+            tr("storage.locationError"),
+            "warning"
+          );
           // Still update UI even if backend save fails (will be saved when user clicks Save)
           localSettings = { ...localSettings, storagePath: result };
         }

@@ -3422,6 +3422,19 @@ fn set_download_directory(
     // Expand tilde if present
     let expanded_path = expand_tilde(&path);
     
+    // Validate that the path exists and is a directory (or can be created)
+    if expanded_path.exists() {
+        if !expanded_path.is_dir() {
+            return Err(format!("Path exists but is not a directory: {}", expanded_path.display()));
+        }
+    } else {
+        // Try to create the directory
+        if let Err(e) = std::fs::create_dir_all(&expanded_path) {
+            return Err(format!("Failed to create directory '{}': {}", expanded_path.display(), e));
+        }
+        info!("Created download directory: {}", expanded_path.display());
+    }
+    
     // Convert to string for storage and display using platform-native separators
     let path_string = expanded_path.display().to_string();
     
