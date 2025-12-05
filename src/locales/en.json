@@ -23,6 +23,8 @@
   "storage.location": "Storage Location",
   "storage.locationPick": "Pick storage location",
   "storage.selectLocationTitle": "Select Storage Location",
+  "storage.locationSuccess": "Storage location set to: {path}",
+  "storage.locationError": "Failed to set storage location",
   "storage.enterPathPrompt": "Enter storage path",
   "storage.browserNoPicker": "Tauri file picker not available in browser",
   "storage.maxSize": "Max Storage Size (GB)",

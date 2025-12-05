@@ -198,16 +198,62 @@ fn load_settings_from_file(app_handle: &tauri::AppHandle) -> BackendSettings {
     BackendSettings::default()
 }
 
+/// Save settings to the Tauri app data directory
+fn save_settings_to_file(app_handle: &tauri::AppHandle, settings: &BackendSettings) -> Result<(), String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+
+    // Ensure directory exists
+    if !app_data_dir.exists() {
+        std::fs::create_dir_all(&app_data_dir)
+            .map_err(|e| format!("Failed to create app data directory: {}", e))?;
+    }
+
+    let settings_file = app_data_dir.join("settings.json");
+    
+    // Convert to JSON - use camelCase for consistency with frontend
+    let json = serde_json::json!({
+        "storagePath": settings.storage_path,
+        "enableFileLogging": settings.enable_file_logging,
+        "maxLogSizeMB": settings.max_log_size_mb,
+    });
+
+    let json_string = serde_json::to_string_pretty(&json)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+
+    std::fs::write(&settings_file, json_string)
+        .map_err(|e| format!("Failed to write settings file: {}", e))?;
+
+    info!("Settings saved to: {}", settings_file.display());
+    Ok(())
+}
+
 /// Expand tilde (~) in path to home directory
+/// Uses PathBuf::join() for platform-native path construction
 fn expand_tilde(path: &str) -> PathBuf {
-    if path.starts_with("~/") || path == "~" {
+    let path_str = path.trim();
+    
+    if path_str.starts_with("~/") || path_str == "~" {
         if let Some(base_dirs) = directories::BaseDirs::new() {
-            return base_dirs
-                .home_dir()
-                .join(path.strip_prefix("~/").unwrap_or(""));
+            let relative_part = path_str.strip_prefix("~/").unwrap_or("");
+            
+            // Split by both forward and backward slashes and rejoin using PathBuf::join()
+            // This ensures platform-native path separators
+            let mut result = base_dirs.home_dir().to_path_buf();
+            for component in relative_part.split(|c| c == '/' || c == '\\') {
+                if !component.is_empty() {
+                    result = result.join(component);
+                }
+            }
+            return result;
         }
     }
-    PathBuf::from(path)
+    
+    // For non-tilde paths, just return as PathBuf
+    // PathBuf::from() handles the path as-is
+    PathBuf::from(path_str)
 }
 
 /// Detect MIME type from file extension
@@ -3321,6 +3367,8 @@ fn detect_locale() -> String {
 }
 
 /// Get the resolved download directory.
+/// Returns a platform-native path string (e.g., C:\Users\...\Downloads\Chiral-Network-Storage on Windows,
+/// /Users/.../Downloads/Chiral-Network-Storage on macOS, /home/.../Downloads/Chiral-Network-Storage on Linux)
 #[tauri::command]
 fn get_download_directory(app: tauri::AppHandle) -> Result<String, String> {
     // Load backend settings from file
@@ -3329,20 +3377,63 @@ fn get_download_directory(app: tauri::AppHandle) -> Result<String, String> {
     // If backend has a configured path, use it
     if !backend_settings.storage_path.is_empty() {
         let expanded_path = expand_tilde(&backend_settings.storage_path);
-        return expanded_path
-            .to_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "Failed to convert path to string".to_string());
+        // Use .display().to_string() for more robust conversion
+        return Ok(expanded_path.display().to_string());
     }
 
-    // Cross-platform default
-    let default_path = "~/Downloads/Chiral-Network-Storage";
+    // Use platform-native default by building path with PathBuf::join()
+    // This automatically uses the correct path separator for the current OS
+    if let Some(user_dirs) = directories::UserDirs::new() {
+        let downloads_dir = user_dirs.download_dir().map(|p| p.to_path_buf());
+        
+        // If download_dir is available, use it; otherwise fall back to home/Downloads
+        let base_dir = downloads_dir.unwrap_or_else(|| {
+            user_dirs.home_dir().join("Downloads")
+        });
+        
+        let default_path = base_dir.join("Chiral-Network-Storage");
+        return Ok(default_path.display().to_string());
+    }
+    
+    // Fallback: try BaseDirs if UserDirs fails
+    if let Some(base_dirs) = directories::BaseDirs::new() {
+        let default_path = base_dirs
+            .home_dir()
+            .join("Downloads")
+            .join("Chiral-Network-Storage");
+        return Ok(default_path.display().to_string());
+    }
 
-    let expanded_path = expand_tilde(default_path);
-    expanded_path
-        .to_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| "Failed to convert path to string".to_string())
+    Err("Failed to get home directory".to_string())
+}
+
+/// Set the download directory path and persist it to settings.
+/// Returns the expanded, platform-native path for display in the UI.
+#[tauri::command]
+fn set_download_directory(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<String, String> {
+    // Validate path is not empty
+    if path.trim().is_empty() {
+        return Err("Path cannot be empty".to_string());
+    }
+
+    // Expand tilde if present
+    let expanded_path = expand_tilde(&path);
+    
+    // Convert to string for storage and display using platform-native separators
+    let path_string = expanded_path.display().to_string();
+    
+    // Update and save settings
+    let mut settings = load_settings_from_file(&app);
+    settings.storage_path = path_string.clone();
+    save_settings_to_file(&app, &settings)?;
+    
+    info!("Download directory set to: {}", path_string);
+    
+    // Return the expanded path for display
+    Ok(path_string)
 }
 
 #[tauri::command]
@@ -7380,6 +7471,7 @@ fn main() {
             get_dht_events,
             detect_locale,
             get_download_directory,
+            set_download_directory,
             check_directory_exists,
             ensure_directory_exists,
             get_dht_health,
@@ -8321,6 +8413,66 @@ mod tests {
     }
 
     // Add more tests for other functions/modules as needed
+
+    #[test]
+    fn test_expand_tilde_with_simple_path() {
+        // Test that tilde expansion works and produces an absolute path
+        let result = expand_tilde("~/Downloads/test");
+        
+        // The result should be an absolute path (not start with ~)
+        let path_str = result.display().to_string();
+        assert!(!path_str.starts_with("~"), "Path should not start with tilde after expansion");
+        
+        // On all platforms, the path should be absolute after expansion
+        assert!(result.is_absolute(), "Expanded path should be absolute");
+        
+        // The path should end with the correct path components
+        assert!(path_str.contains("Downloads"), "Path should contain 'Downloads'");
+        assert!(path_str.contains("test"), "Path should contain 'test'");
+    }
+    
+    #[test]
+    fn test_expand_tilde_with_just_tilde() {
+        // Test that ~ alone expands to home directory
+        let result = expand_tilde("~");
+        
+        // The result should be an absolute path
+        assert!(result.is_absolute(), "Home path should be absolute");
+        
+        // The path should not contain tilde
+        let path_str = result.display().to_string();
+        assert!(!path_str.starts_with("~"), "Path should not start with tilde");
+    }
+    
+    #[test]
+    fn test_expand_tilde_with_absolute_path() {
+        // Test that absolute paths are returned as-is
+        #[cfg(unix)]
+        let test_path = "/usr/local/bin";
+        #[cfg(windows)]
+        let test_path = "C:\\Windows\\System32";
+        
+        let result = expand_tilde(test_path);
+        assert_eq!(result.display().to_string(), test_path);
+    }
+    
+    #[test]
+    fn test_expand_tilde_normalizes_separators() {
+        // Test that path separators are normalized for the current platform
+        let result = expand_tilde("~/Downloads/test/file");
+        let path_str = result.display().to_string();
+        
+        // On Unix, should use forward slashes
+        #[cfg(unix)]
+        {
+            assert!(!path_str.contains('\\'), "Unix paths should not contain backslashes");
+        }
+        
+        // On Windows, the path components should be present regardless of separator
+        assert!(path_str.contains("Downloads"), "Path should contain 'Downloads'");
+        assert!(path_str.contains("test"), "Path should contain 'test'");
+        assert!(path_str.contains("file"), "Path should contain 'file'");
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

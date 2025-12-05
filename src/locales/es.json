@@ -20,6 +20,8 @@
   "storage.location": "Ubicación de almacenamiento",
   "storage.locationPick": "Elegir ubicación de almacenamiento",
   "storage.selectLocationTitle": "Seleccionar ubicación de almacenamiento",
+  "storage.locationSuccess": "Ubicación de almacenamiento establecida en: {path}",
+  "storage.locationError": "Error al establecer la ubicación de almacenamiento",
   "storage.enterPathPrompt": "Ingresar ruta de almacenamiento",
   "storage.browserNoPicker": "Selector de archivos Tauri no disponible en el navegador",
   "storage.maxSize": "Tamaño máximo de almacenamiento (GB)",

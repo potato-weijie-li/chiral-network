@@ -686,13 +686,33 @@
         multiple: false,
         defaultPath: localSettings.storagePath.startsWith("~/")
           ? localSettings.storagePath.replace("~", home)
-          : localSettings.storagePath,
+          : localSettings.storagePath || undefined,
         title: tr("storage.selectLocationTitle"),
       });
 
       if (typeof result === "string") {
-        // Reassign the entire object to trigger reactivity
-        localSettings = { ...localSettings, storagePath: result };
+        // Call backend to validate and save the path
+        try {
+          const savedPath = await invoke<string>(
+            "set_download_directory",
+            { path: result }
+          );
+          
+          // Update UI with the saved path (which is the expanded, platform-native path)
+          localSettings = { ...localSettings, storagePath: savedPath };
+          
+          showToast(
+            tr("storage.locationSuccess", { path: savedPath }),
+            "success"
+          );
+        } catch (backendError) {
+          errorLogger.fileOperationError(
+            'Set storage path',
+            backendError instanceof Error ? backendError.message : String(backendError)
+          );
+          // Still update UI even if backend save fails (will be saved when user clicks Save)
+          localSettings = { ...localSettings, storagePath: result };
+        }
       }
     } catch {
       // Fallback for browser environment
