@@ -1053,29 +1053,32 @@ impl WebRTCService {
         };
 
         // Serialize request and send over data channel
-        let request_json = serde_json::to_string(request).map_err(|e| {
-            let error = format!(
-                "Failed to serialize file request [file_hash={}, peer={}]: {}",
-                request.file_hash, peer_id, e
-            );
-            error!("{}", error);
-            error
-        })?;
+        let request_json = match serde_json::to_string(request) {
+            Ok(json) => json,
+            Err(e) => {
+                let error = format!(
+                    "Failed to serialize file request [file_hash={}, peer={}]: {}",
+                    request.file_hash, peer_id, e
+                );
+                // Don't emit event for serialization errors - these are internal errors
+                return Err(error);
+            }
+        };
 
         info!("📨 Sending file request JSON to peer {}: {}", peer_id, request_json);
         
-        dc.send_text(request_json).await.map_err(|e| {
+        if let Err(e) = dc.send_text(request_json).await {
             let error = format!(
                 "Failed to send file request over data channel [file_hash={}, peer={}, channel_state={:?}]: {}",
                 request.file_hash, peer_id, dc.ready_state(), e
             );
             error!("{}", error);
-            let _ = event_tx.try_send(WebRTCEvent::ConnectionFailed {
+            let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
                 peer_id: peer_id.to_string(),
                 error: error.clone(),
-            });
-            error
-        })?;
+            }).await;
+            return Err(error);
+        }
 
         info!("✅ File request sent successfully to peer {}", peer_id);
         Ok(())
@@ -1161,29 +1164,32 @@ impl WebRTCService {
 
         // Create WebRTC message and serialize
         let message = WebRTCMessage::HmacKeyExchangeRequest(request.clone());
-        let message_json = serde_json::to_string(&message).map_err(|e| {
-            let error = format!(
-                "Failed to serialize HMAC key exchange request [peer={}]: {}",
-                peer_id, e
-            );
-            error!("{}", error);
-            error
-        })?;
+        let message_json = match serde_json::to_string(&message) {
+            Ok(json) => json,
+            Err(e) => {
+                let error = format!(
+                    "Failed to serialize HMAC key exchange request [peer={}]: {}",
+                    peer_id, e
+                );
+                // Don't emit event for serialization errors - these are internal errors
+                return Err(error);
+            }
+        };
 
         info!("🔐 Sending HMAC key exchange request JSON to peer {}", peer_id);
         
-        dc.send_text(message_json).await.map_err(|e| {
+        if let Err(e) = dc.send_text(message_json).await {
             let error = format!(
                 "Failed to send HMAC key exchange request over data channel [peer={}, channel_state={:?}]: {}",
                 peer_id, dc.ready_state(), e
             );
             error!("{}", error);
-            let _ = event_tx.try_send(WebRTCEvent::ConnectionFailed {
+            let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
                 peer_id: peer_id.to_string(),
                 error: error.clone(),
-            });
-            error
-        })?;
+            }).await;
+            return Err(error);
+        }
 
         info!("✅ HMAC key exchange request sent successfully to peer {}", peer_id);
         Ok(())
@@ -1269,29 +1275,32 @@ impl WebRTCService {
 
         // Create WebRTC message and serialize
         let message = WebRTCMessage::HmacKeyExchangeResponse(response.clone());
-        let message_json = serde_json::to_string(&message).map_err(|e| {
-            let error = format!(
-                "Failed to serialize HMAC key exchange response [peer={}]: {}",
-                peer_id, e
-            );
-            error!("{}", error);
-            error
-        })?;
+        let message_json = match serde_json::to_string(&message) {
+            Ok(json) => json,
+            Err(e) => {
+                let error = format!(
+                    "Failed to serialize HMAC key exchange response [peer={}]: {}",
+                    peer_id, e
+                );
+                // Don't emit event for serialization errors - these are internal errors
+                return Err(error);
+            }
+        };
 
         info!("🔐 Sending HMAC key exchange response JSON to peer {}", peer_id);
         
-        dc.send_text(message_json).await.map_err(|e| {
+        if let Err(e) = dc.send_text(message_json).await {
             let error = format!(
                 "Failed to send HMAC key exchange response over data channel [peer={}, channel_state={:?}]: {}",
                 peer_id, dc.ready_state(), e
             );
             error!("{}", error);
-            let _ = event_tx.try_send(WebRTCEvent::ConnectionFailed {
+            let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
                 peer_id: peer_id.to_string(),
                 error: error.clone(),
-            });
-            error
-        })?;
+            }).await;
+            return Err(error);
+        }
 
         info!("✅ HMAC key exchange response sent successfully to peer {}", peer_id);
         Ok(())
