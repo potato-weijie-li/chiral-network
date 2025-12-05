@@ -264,6 +264,35 @@ pub enum WebRTCMessage {
     HmacKeyExchangeResponse(crate::stream_auth::HmacKeyExchangeResponse),
 }
 
+/// WebRTC service for peer-to-peer file transfers.
+/// 
+/// # Connection Retry System
+/// 
+/// WebRTC connections use the `ConnectionManager` for automatic retry with exponential backoff.
+/// The retry configuration is defined in `RetryConfig::for_webrtc()`:
+/// 
+/// - **Max Attempts**: 3
+/// - **Initial Delay**: 1 second
+/// - **Max Delay**: 15 seconds
+/// - **Backoff Multiplier**: 2.0
+/// - **Jitter Factor**: 0.2 (to prevent thundering herd)
+/// 
+/// ## Events Emitted
+/// 
+/// The following events are emitted during connection lifecycle:
+/// 
+/// - `ConnectionEstablished`: When a connection is successfully established
+/// - `ConnectionFailed`: When a connection attempt fails (single attempt)
+/// - `ConnectionRetrying`: Before each retry attempt (includes attempt number and delay)
+/// - `ConnectionPermanentlyFailed`: After all retries are exhausted
+/// 
+/// ## Error Handling
+/// 
+/// All error paths emit appropriate `WebRTCEvent` variants for UI notification.
+/// Error messages include context such as peer_id, file_hash, and channel_state
+/// for debugging purposes.
+/// 
+/// See `connection_retry.rs` for implementation details.
 pub struct WebRTCService {
     cmd_tx: mpsc::Sender<WebRTCCommand>,
     event_tx: mpsc::Sender<WebRTCEvent>,
@@ -381,23 +410,29 @@ impl WebRTCService {
                     Self::handle_answer(&peer_id, &answer, &connections, &connection_manager).await;
                 }
                 WebRTCCommand::AddIceCandidate { peer_id, candidate } => {
-                    Self::handle_ice_candidate(&peer_id, &candidate, &connections).await;
+                    Self::handle_ice_candidate(&peer_id, &candidate, &connections, &event_tx).await;
                 }
                 WebRTCCommand::SendFileRequest { peer_id, request } => {
                     info!("📤 Sending file request to peer {} for file {}", peer_id, request.file_hash);
                     // Send the file request over the data channel to the peer
-                    Self::send_file_request_to_peer(&peer_id, &request, &connections).await;
+                    if let Err(e) = Self::send_file_request_to_peer(&peer_id, &request, &connections, &event_tx).await {
+                        warn!("Failed to send file request to peer {}: {}", peer_id, e);
+                    }
                 }
                 WebRTCCommand::SendFileChunk { peer_id, chunk } => {
                     Self::handle_send_chunk(&peer_id, &chunk, &connections, &bandwidth).await;
                 }
                 WebRTCCommand::SendHmacKeyExchangeRequest { peer_id, request } => {
                     info!("🔐 Sending HMAC key exchange request to peer {}", peer_id);
-                    Self::send_hmac_key_exchange_request_to_peer(&peer_id, &request, &connections).await;
+                    if let Err(e) = Self::send_hmac_key_exchange_request_to_peer(&peer_id, &request, &connections, &event_tx).await {
+                        warn!("Failed to send HMAC key exchange request to peer {}: {}", peer_id, e);
+                    }
                 }
                 WebRTCCommand::SendHmacKeyExchangeResponse { peer_id, response } => {
                     info!("🔐 Sending HMAC key exchange response to peer {}", peer_id);
-                    Self::send_hmac_key_exchange_response_to_peer(&peer_id, &response, &connections).await;
+                    if let Err(e) = Self::send_hmac_key_exchange_response_to_peer(&peer_id, &response, &connections, &event_tx).await {
+                        warn!("Failed to send HMAC key exchange response to peer {}: {}", peer_id, e);
+                    }
                 }
                 WebRTCCommand::RequestFileChunk {
                     peer_id,
@@ -893,10 +928,14 @@ impl WebRTCService {
         }
     }
 
+    /// Handle an incoming ICE candidate from a peer.
+    /// 
+    /// Emits `ConnectionFailed` events on error for UI notification.
     async fn handle_ice_candidate(
         peer_id: &str,
         candidate_str: &str,
         connections: &Arc<Mutex<HashMap<String, PeerConnection>>>,
+        event_tx: &mpsc::Sender<WebRTCEvent>,
     ) {
         let mut conns = connections.lock().await;
         if let Some(connection) = conns.get_mut(peer_id) {
@@ -905,23 +944,54 @@ impl WebRTCService {
                     match serde_json::from_str::<RTCIceCandidateInit>(candidate_str) {
                         Ok(candidate) => candidate,
                         Err(e) => {
-                            error!("Failed to parse ICE candidate: {}", e);
+                            let error = format!(
+                                "Failed to parse ICE candidate for peer {}: {}",
+                                peer_id, e
+                            );
+                            error!("{}", error);
+                            let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                                peer_id: peer_id.to_string(),
+                                error,
+                            }).await;
                             return;
                         }
                     };
 
                 if let Err(e) = pc.add_ice_candidate(candidate_init).await {
-                    error!("Failed to add ICE candidate: {}", e);
+                    let error = format!(
+                        "Failed to add ICE candidate for peer {}: {}",
+                        peer_id, e
+                    );
+                    error!("{}", error);
+                    let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                        peer_id: peer_id.to_string(),
+                        error,
+                    }).await;
                 }
             }
+        } else {
+            let error = format!(
+                "Peer {} not found in connections when adding ICE candidate",
+                peer_id
+            );
+            warn!("{}", error);
+            let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                peer_id: peer_id.to_string(),
+                error,
+            }).await;
         }
     }
 
+    /// Send a file request to a peer over the WebRTC data channel.
+    /// 
+    /// Returns `Ok(())` on successful send, or `Err(String)` with error details.
+    /// Emits `ConnectionFailed` events on error for UI notification.
     async fn send_file_request_to_peer(
         peer_id: &str,
         request: &WebRTCFileRequest,
         connections: &Arc<Mutex<HashMap<String, PeerConnection>>>,
-    ) {
+        event_tx: &mpsc::Sender<WebRTCEvent>,
+    ) -> Result<(), String> {
         use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
         info!("Sending file request to peer {} for file {}", peer_id, request.file_hash);
@@ -939,46 +1009,99 @@ impl WebRTCService {
                         break dc.clone();
                     }
                     if state == RTCDataChannelState::Closed || state == RTCDataChannelState::Closing {
-                        error!("Data channel is closed or closing for peer {}", peer_id);
-                        return;
+                        let error = format!(
+                            "Data channel closed for peer {} [file_hash={}, channel_state={:?}]",
+                            peer_id, request.file_hash, state
+                        );
+                        error!("{}", error);
+                        let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                            peer_id: peer_id.to_string(),
+                            error: error.clone(),
+                        }).await;
+                        return Err(error);
                     }
                     if start.elapsed() > timeout {
-                        error!("Timeout waiting for data channel to open for peer {}", peer_id);
-                        return;
+                        let error = format!(
+                            "Timeout waiting for data channel to open for peer {} [file_hash={}, elapsed={:?}]",
+                            peer_id, request.file_hash, start.elapsed()
+                        );
+                        error!("{}", error);
+                        let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                            peer_id: peer_id.to_string(),
+                            error: error.clone(),
+                        }).await;
+                        return Err(error);
                     }
                 } else {
-                    error!("No data channel found for peer {}", peer_id);
-                    return;
+                    let error = format!(
+                        "No data channel found for peer {} [file_hash={}]",
+                        peer_id, request.file_hash
+                    );
+                    error!("{}", error);
+                    let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                        peer_id: peer_id.to_string(),
+                        error: error.clone(),
+                    }).await;
+                    return Err(error);
                 }
             } else {
-                error!("Peer {} not found in connections", peer_id);
-                return;
+                let error = format!(
+                    "Peer {} not found in connections [file_hash={}]",
+                    peer_id, request.file_hash
+                );
+                error!("{}", error);
+                let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                    peer_id: peer_id.to_string(),
+                    error: error.clone(),
+                }).await;
+                return Err(error);
             }
             drop(conns); // Release lock before sleeping
             sleep(Duration::from_millis(50)).await;
         };
 
         // Serialize request and send over data channel
-        match serde_json::to_string(request) {
-            Ok(request_json) => {
-                info!("📨 Sending file request JSON to peer {}: {}", peer_id, request_json);
-                if let Err(e) = dc.send_text(request_json).await {
-                    error!("Failed to send file request over data channel: {}", e);
-                } else {
-                    info!("✅ File request sent successfully to peer {}", peer_id);
-                }
-            }
+        let request_json = match serde_json::to_string(request) {
+            Ok(json) => json,
             Err(e) => {
-                error!("Failed to serialize file request: {}", e);
+                let error = format!(
+                    "Failed to serialize file request [file_hash={}, peer={}]: {}",
+                    request.file_hash, peer_id, e
+                );
+                // Don't emit event for serialization errors - these are internal errors
+                return Err(error);
             }
+        };
+
+        info!("📨 Sending file request JSON to peer {}: {}", peer_id, request_json);
+        
+        if let Err(e) = dc.send_text(request_json).await {
+            let error = format!(
+                "Failed to send file request over data channel [file_hash={}, peer={}, channel_state={:?}]: {}",
+                request.file_hash, peer_id, dc.ready_state(), e
+            );
+            error!("{}", error);
+            let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                peer_id: peer_id.to_string(),
+                error: error.clone(),
+            }).await;
+            return Err(error);
         }
+
+        info!("✅ File request sent successfully to peer {}", peer_id);
+        Ok(())
     }
 
+    /// Send an HMAC key exchange request to a peer over the WebRTC data channel.
+    /// 
+    /// Returns `Ok(())` on successful send, or `Err(String)` with error details.
+    /// Emits `ConnectionFailed` events on error for UI notification.
     async fn send_hmac_key_exchange_request_to_peer(
         peer_id: &str,
         request: &crate::stream_auth::HmacKeyExchangeRequest,
         connections: &Arc<Mutex<HashMap<String, PeerConnection>>>,
-    ) {
+        event_tx: &mpsc::Sender<WebRTCEvent>,
+    ) -> Result<(), String> {
         use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
         info!("🔐 Sending HMAC key exchange request to peer {}", peer_id);
@@ -996,20 +1119,52 @@ impl WebRTCService {
                         break dc.clone();
                     }
                     if state == RTCDataChannelState::Closed || state == RTCDataChannelState::Closing {
-                        error!("Data channel is closed or closing for peer {}", peer_id);
-                        return;
+                        let error = format!(
+                            "Data channel closed for peer {} during HMAC key exchange [channel_state={:?}]",
+                            peer_id, state
+                        );
+                        error!("{}", error);
+                        let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                            peer_id: peer_id.to_string(),
+                            error: error.clone(),
+                        }).await;
+                        return Err(error);
                     }
                     if start.elapsed() > timeout {
-                        error!("Timeout waiting for data channel to open for peer {}", peer_id);
-                        return;
+                        let error = format!(
+                            "Timeout waiting for data channel to open for peer {} during HMAC key exchange [elapsed={:?}]",
+                            peer_id, start.elapsed()
+                        );
+                        error!("{}", error);
+                        let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                            peer_id: peer_id.to_string(),
+                            error: error.clone(),
+                        }).await;
+                        return Err(error);
                     }
                 } else {
-                    error!("No data channel found for peer {}", peer_id);
-                    return;
+                    let error = format!(
+                        "No data channel found for peer {} during HMAC key exchange",
+                        peer_id
+                    );
+                    error!("{}", error);
+                    let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                        peer_id: peer_id.to_string(),
+                        error: error.clone(),
+                    }).await;
+                    return Err(error);
                 }
             } else {
-                error!("Peer {} not found in connections", peer_id);
-                return;
+                let error = format!(
+                    "Peer {} not found in connections during HMAC key exchange",
+                    peer_id
+                );
+                error!("{}", error);
+                let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                    peer_id: peer_id.to_string(),
+                    error: error.clone(),
+                }).await;
+                return Err(error);
             }
             drop(conns); // Release lock before sleeping
             sleep(Duration::from_millis(50)).await;
@@ -1017,26 +1172,47 @@ impl WebRTCService {
 
         // Create WebRTC message and serialize
         let message = WebRTCMessage::HmacKeyExchangeRequest(request.clone());
-        match serde_json::to_string(&message) {
-            Ok(message_json) => {
-                info!("🔐 Sending HMAC key exchange request JSON to peer {}", peer_id);
-                if let Err(e) = dc.send_text(message_json).await {
-                    error!("Failed to send HMAC key exchange request over data channel: {}", e);
-                } else {
-                    info!("✅ HMAC key exchange request sent successfully to peer {}", peer_id);
-                }
-            }
+        let message_json = match serde_json::to_string(&message) {
+            Ok(json) => json,
             Err(e) => {
-                error!("Failed to serialize HMAC key exchange request: {}", e);
+                let error = format!(
+                    "Failed to serialize HMAC key exchange request [peer={}]: {}",
+                    peer_id, e
+                );
+                // Don't emit event for serialization errors - these are internal errors
+                return Err(error);
             }
+        };
+
+        info!("🔐 Sending HMAC key exchange request JSON to peer {}", peer_id);
+        
+        if let Err(e) = dc.send_text(message_json).await {
+            let error = format!(
+                "Failed to send HMAC key exchange request over data channel [peer={}, channel_state={:?}]: {}",
+                peer_id, dc.ready_state(), e
+            );
+            error!("{}", error);
+            let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                peer_id: peer_id.to_string(),
+                error: error.clone(),
+            }).await;
+            return Err(error);
         }
+
+        info!("✅ HMAC key exchange request sent successfully to peer {}", peer_id);
+        Ok(())
     }
 
+    /// Send an HMAC key exchange response to a peer over the WebRTC data channel.
+    /// 
+    /// Returns `Ok(())` on successful send, or `Err(String)` with error details.
+    /// Emits `ConnectionFailed` events on error for UI notification.
     async fn send_hmac_key_exchange_response_to_peer(
         peer_id: &str,
         response: &crate::stream_auth::HmacKeyExchangeResponse,
         connections: &Arc<Mutex<HashMap<String, PeerConnection>>>,
-    ) {
+        event_tx: &mpsc::Sender<WebRTCEvent>,
+    ) -> Result<(), String> {
         use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
         info!("🔐 Sending HMAC key exchange response to peer {}", peer_id);
@@ -1054,20 +1230,52 @@ impl WebRTCService {
                         break dc.clone();
                     }
                     if state == RTCDataChannelState::Closed || state == RTCDataChannelState::Closing {
-                        error!("Data channel is closed or closing for peer {}", peer_id);
-                        return;
+                        let error = format!(
+                            "Data channel closed for peer {} during HMAC key exchange response [channel_state={:?}]",
+                            peer_id, state
+                        );
+                        error!("{}", error);
+                        let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                            peer_id: peer_id.to_string(),
+                            error: error.clone(),
+                        }).await;
+                        return Err(error);
                     }
                     if start.elapsed() > timeout {
-                        error!("Timeout waiting for data channel to open for peer {}", peer_id);
-                        return;
+                        let error = format!(
+                            "Timeout waiting for data channel to open for peer {} during HMAC key exchange response [elapsed={:?}]",
+                            peer_id, start.elapsed()
+                        );
+                        error!("{}", error);
+                        let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                            peer_id: peer_id.to_string(),
+                            error: error.clone(),
+                        }).await;
+                        return Err(error);
                     }
                 } else {
-                    error!("No data channel found for peer {}", peer_id);
-                    return;
+                    let error = format!(
+                        "No data channel found for peer {} during HMAC key exchange response",
+                        peer_id
+                    );
+                    error!("{}", error);
+                    let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                        peer_id: peer_id.to_string(),
+                        error: error.clone(),
+                    }).await;
+                    return Err(error);
                 }
             } else {
-                error!("Peer {} not found in connections", peer_id);
-                return;
+                let error = format!(
+                    "Peer {} not found in connections during HMAC key exchange response",
+                    peer_id
+                );
+                error!("{}", error);
+                let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                    peer_id: peer_id.to_string(),
+                    error: error.clone(),
+                }).await;
+                return Err(error);
             }
             drop(conns); // Release lock before sleeping
             sleep(Duration::from_millis(50)).await;
@@ -1075,19 +1283,35 @@ impl WebRTCService {
 
         // Create WebRTC message and serialize
         let message = WebRTCMessage::HmacKeyExchangeResponse(response.clone());
-        match serde_json::to_string(&message) {
-            Ok(message_json) => {
-                info!("🔐 Sending HMAC key exchange response JSON to peer {}", peer_id);
-                if let Err(e) = dc.send_text(message_json).await {
-                    error!("Failed to send HMAC key exchange response over data channel: {}", e);
-                } else {
-                    info!("✅ HMAC key exchange response sent successfully to peer {}", peer_id);
-                }
-            }
+        let message_json = match serde_json::to_string(&message) {
+            Ok(json) => json,
             Err(e) => {
-                error!("Failed to serialize HMAC key exchange response: {}", e);
+                let error = format!(
+                    "Failed to serialize HMAC key exchange response [peer={}]: {}",
+                    peer_id, e
+                );
+                // Don't emit event for serialization errors - these are internal errors
+                return Err(error);
             }
+        };
+
+        info!("🔐 Sending HMAC key exchange response JSON to peer {}", peer_id);
+        
+        if let Err(e) = dc.send_text(message_json).await {
+            let error = format!(
+                "Failed to send HMAC key exchange response over data channel [peer={}, channel_state={:?}]: {}",
+                peer_id, dc.ready_state(), e
+            );
+            error!("{}", error);
+            let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                peer_id: peer_id.to_string(),
+                error: error.clone(),
+            }).await;
+            return Err(error);
         }
+
+        info!("✅ HMAC key exchange response sent successfully to peer {}", peer_id);
+        Ok(())
     }
 
     async fn handle_file_request(
@@ -1445,6 +1669,7 @@ impl WebRTCService {
                             &request,
                             stream_auth,
                             connections,
+                            event_tx,
                         )
                         .await;
                     }
@@ -1737,6 +1962,7 @@ impl WebRTCService {
         request: &crate::stream_auth::HmacKeyExchangeRequest,
         stream_auth: &Arc<Mutex<StreamAuthService>>,
         connections: &Arc<Mutex<HashMap<String, PeerConnection>>>,
+        event_tx: &mpsc::Sender<WebRTCEvent>,
     ) {
         info!("🔐 Processing HMAC key exchange request from peer {}", peer_id);
 
@@ -1752,11 +1978,14 @@ impl WebRTCService {
 
                 // Send the response back to the peer
                 drop(auth_service); // Release lock before async operation
-                Self::send_hmac_key_exchange_response_to_peer(
+                if let Err(e) = Self::send_hmac_key_exchange_response_to_peer(
                     peer_id,
                     &response,
                     connections,
-                ).await;
+                    event_tx,
+                ).await {
+                    warn!("Failed to send HMAC key exchange response to peer {}: {}", peer_id, e);
+                }
             }
             Err(e) => {
                 error!("Failed to respond to HMAC key exchange from peer {}: {}", peer_id, e);
