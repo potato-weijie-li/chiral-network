@@ -3446,7 +3446,12 @@ async fn start_file_transfer_service(
             state.analytics.clone(),
             chunk_manager,
         );
-        let multi_source_arc                                                                                                                                                                                                             = Arc::new(multi_source_service);
+        let multi_source_arc = Arc::new(multi_source_service);
+
+        // Load persisted downloads and attempt resume
+        if let Err(e) = multi_source_arc.load_download_states().await {
+            warn!("Failed to load persisted download states: {}", e);
+        }
 
         {
             let mut multi_source_guard = state.multi_source_download.lock().await;
@@ -3471,6 +3476,16 @@ async fn start_file_transfer_service(
         tokio::spawn(async move {
             ms_clone.run().await;
         });
+    }
+
+    // Clean up stale download state files on startup
+    if let Some(ms_arc) = {
+        let ms_guard = state.multi_source_download.lock().await;
+        ms_guard.as_ref().cloned()
+    } {
+        if let Err(e) = ms_arc.cleanup_old_download_states().await {
+            warn!("Failed to clean old download states: {}", e);
+        }
     }
 
     {

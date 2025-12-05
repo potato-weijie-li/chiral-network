@@ -349,6 +349,20 @@ impl MultiSourceDownloadService {
     pub async fn run(&self) {
         info!("Starting MultiSourceDownloadService");
 
+        // Periodic state persistence
+        let state_saver = {
+            let this = self.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    if let Err(e) = this.save_download_state().await {
+                        warn!("Failed to persist download state: {}", e);
+                    }
+                }
+            })
+        };
+
         let mut command_rx = self.command_rx.lock().await;
 
         while let Some(command) = command_rx.recv().await {
