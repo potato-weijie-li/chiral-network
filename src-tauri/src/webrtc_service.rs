@@ -970,7 +970,15 @@ impl WebRTCService {
                 }
             }
         } else {
-            warn!("Peer {} not found in connections when adding ICE candidate", peer_id);
+            let error = format!(
+                "Peer {} not found in connections when adding ICE candidate",
+                peer_id
+            );
+            warn!("{}", error);
+            let _ = event_tx.send(WebRTCEvent::ConnectionFailed {
+                peer_id: peer_id.to_string(),
+                error,
+            }).await;
         }
     }
 
