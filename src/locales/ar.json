@@ -23,6 +23,8 @@
   "storage.location": "موقع التخزين",
   "storage.locationPick": "اختر موقع التخزين",
   "storage.selectLocationTitle": "تحديد موقع التخزين",
+  "storage.locationSuccess": "تم تعيين موقع التخزين إلى: {path}",
+  "storage.locationError": "فشل في تعيين موقع التخزين",
   "storage.enterPathPrompt": "أدخِل مسار التخزين",
   "storage.browserNoPicker": "أداة اختيار الملفات من Tauri غير متاحة في المتصفّح",
   "storage.maxSize": "الحد الأقصى لحجم التخزين (غيغابايت)",
@@ -59,6 +61,7 @@
     "copied": "تم النسخ!",
     "copy": "نسخ",
     "stopNode": "إيقاف عقدة Chiral",
+
     "geth": {
       "title": "دورة حياة العقدة",
       "subtitle": "راقب التثبيت ووقت التشغيل والسجلات لعقدة Geth المدمجة.",
@@ -81,6 +84,7 @@
       "errorGeneric": "تعذّر تحميل حالة Geth.",
       "lastUpdated": "تم التحديث في {time}"
     },
+
     "dht": {
       "title": "شبكة DHT",
       "notConnected": "DHT غير متصل",
@@ -99,6 +103,7 @@
       "bootstrapNode": "عقدة التمهيد",
       "listenAddresses": "العناوين المتعددة",
       "noListenAddresses": "لا تتوفر عناوين متعددة. ربما يعمل DHT في وضع العميل فقط.",
+
       "health": {
         "lastBootstrap": "آخر تمهيد",
         "lastPeer": "آخر حدث نظير",
@@ -107,8 +112,10 @@
         "never": "أبدًا",
         "none": "لا يوجد"
       },
+
       "recentEvents": "الأحداث الحديثة",
       "disconnect": "فصل الاتصال عن DHT",
+
       "reachability": {
         "title": "قابلية الوصول",
         "state": {
@@ -141,6 +148,7 @@
           "unknown": "تم تحديث حالة قابلية الوصول. {summary}"
         }
       },
+
       "relay": {
         "title": "حالة الترحيل",
         "enabled": "AutoRelay مفعّل",
@@ -163,6 +171,7 @@
         "pending": "قيد الانتظار",
         "failed": "فشل"
       },
+
       "dcutr": {
         "title": "اختراق NAT عبر DCUtR",
         "enabled": "DCUtR مفعّل",
@@ -177,10 +186,12 @@
         "description": "يسمح DCUtR باختراق الـNAT لتمكين اتصالات مباشرة بين الأقران عبر ترقية الاتصال من خلال المرحّل."
       }
     },
+
     "networkStatus": "حالة الشبكة",
     "dhtPeers": "أقران DHT",
     "networkSize": "حجم الشبكة",
     "bandwidth": "النطاق الترددي",
+
     "peerDiscovery": {
       "title": "اكتشاف الأقران",
       "discovering": "جارٍ الاكتشاف...",
@@ -193,6 +204,7 @@
       "peerAddedToInput": "تمت إضافة النظير إلى الحقل",
       "add": "إضافة"
     },
+
     "connectedPeers": {
       "title": "الأقران المتصلون ({count})",
       "sortBy": "ترتيب حسب",
@@ -229,9 +241,11 @@
       "disconnected": "تم فصل الاتصال بنجاح",
       "disconnectError": "فشل في فصل الاتصال بالنظير"
     },
+
     "smartPeerSelection": "اختيار أقران ذكي",
     "peerSearch": "بحث عن أقران",
     "sendTest": "إرسال اختبار",
+
     "peerMetrics": {
       "refresh": "تحديث",
       "refreshing": "جارٍ التحديث...",
@@ -253,10 +267,12 @@
       "encryption": "التشفير",
       "health": "الصحة"
     },
+
     "errors": {
       "downloadOnlyTauri": "تنزيل عقدة Chiral متاح فقط عبر تطبيق سطح المكتب. يرجى تنزيل نسخة Tauri.",
       "dhtNotConnected": "DHT غير متصل. يرجى بدء الخدمة أولًا."
     },
+
     "maxConnections": "الحد الأقصى للاتصالات",
     "port": "المنفذ",
     "uploadLimit": "حد الرفع (MB/s)",
@@ -270,6 +286,7 @@
     "autoStartNodeDescription": "بدء عقدة DHT لمشاركة الملفات تلقائيًا عند تشغيل التطبيق",
     "autoStartGeth": "بدء تلقائي لعقدة البلوكشين عند التشغيل",
     "autoStartGethDescription": "بدء عقدة Geth للبلوكشين تلقائيًا عند تشغيل التطبيق (يفعل المحفظة والتعدين)",
+
     "geoDistribution": {
       "title": "التوزيع الجغرافي",
       "subtitle": "عرض خريطة لـ {peers} من الأقران",
@@ -280,6 +297,7 @@
       "emptyState": "اتصل بـ DHT لبدء رسم خريطة الأقران.",
       "unknownNotice": "{count} من الأقران ليس لديهم موقع معلن بعد."
     },
+
     "quickActions": {
       "title": "إجراءات سريعة",
       "badge": "أدوات الشبكة",
@@ -326,6 +344,7 @@
     "searchPlaceholder": "البحث في التنزيلات...",
     "clearSearch": "مسح البحث",
     "clearFinished": "مسح المكتملة",
+
     "filters": {
       "all": "الكل",
       "active": "نشط",
@@ -335,6 +354,7 @@
       "canceled": "ملغى",
       "failed": "فشل"
     },
+
     "settings": {
       "title": "الإعدادات",
       "concurrency": "التوازي",
@@ -344,9 +364,11 @@
       "autoStart": "بدء تلقائي",
       "toggleAutoStart": "تبديل البدء التلقائي {status}"
     },
+
     "autoClear": "مسح تلقائي",
     "multiSource": "متعدد المصادر",
     "maxPeers": "الحد الأقصى للأقران",
+
     "status": {
       "noDownloads": "لم تبدأ أي عمليات تنزيل بعد.",
       "noActive": "لا توجد تنزيلات نشطة.",
@@ -355,16 +377,19 @@
       "noCompleted": "لا توجد تنزيلات مكتملة.",
       "noFailed": "لا توجد تنزيلات فاشلة."
     },
+
     "file": {
       "hash": "Merkle Hash",
       "queue": "قائمة الانتظار",
       "progress": "التقدّم"
     },
+
     "priority": {
       "low": "منخفض",
       "normal": "عادي",
       "high": "عالٍ"
     },
+
     "actions": {
       "start": "بدء",
       "pause": "إيقاف مؤقت",
@@ -374,6 +399,7 @@
       "showInFolder": "عرض في المجلد",
       "retry": "إعادة المحاولة"
     },
+
     "notifications": {
       "enterHash": "يرجى إدخال Merkle hash أو CID لبدء التنزيل.",
       "searching": "جارٍ البحث عن بيانات الملف في DHT...",
@@ -385,6 +411,7 @@
       "resumedSingle": "تمت استعادة تنزيل واحد متوقف. يمكنك استئنافه من صفحة التنزيلات.",
       "resumedMultiple": "تمت استعادة {count} تنزيلات متوقفة. يمكنك استئنافها من صفحة التنزيلات."
     },
+
     "search": {
       "status": {
         "started": "جارٍ البحث في الشبكة...",
@@ -399,9 +426,11 @@
         "placeholder": "قم بتشغيل بحث لعرض بيانات الملف.",
         "addedToQueue": "تمت إضافة \"{name}\" إلى قائمة التنزيل"
       },
+
       "notifications": {
         "copied": "تم نسخ {value} إلى الحافظة"
       },
+
       "history": {
         "title": "سجل البحث",
         "clear": "مسح السجل",
@@ -411,6 +440,7 @@
         "notFound": "لم يتم العثور على seeders",
         "pending": "بانتظار النتيجة"
       },
+
       "queue": {
         "status": {
           "completed": "تم اكتمال تنزيل الملف مسبقًا",
@@ -422,15 +452,18 @@
           "other": "الملف موجود بالفعل في التنزيلات ({status})"
         }
       },
+
       "button": "بحث",
       "searchVersions": "البحث عن الإصدارات",
       "namePlaceholder": "Enter file name (e.g., \"document.pdf\")"
     },
+
     "telemetry": {
       "retrying": "إعادة محاولة التنزيل لـ {hash} (المحاولة {attempt} من {max})",
       "recovered": "تم استعادة التنزيل لـ {hash} بعد {retries} محاولات ({duration} مللي ثانية)",
       "failed": "فشل تنزيل {hash} بعد {attempts} محاولات"
     },
+
     "selectProtocol": "اختيار البروتوكول",
     "currentProtocol": "البروتوكول الحالي",
     "changeProtocol": "تغيير البروتوكول"
@@ -479,11 +512,13 @@
   "privacy.shareAnalytics": "مشاركة تحليلات استخدام مجهولة",
   "privacy.autoLockWallet": "القفل التلقائي للمحفظة بعد عدم النشاط",
   "privacy.autoLockWalletHint": "سيتم تسجيل خروجك تلقائيًا بعد ساعة من عدم النشاط.",
+
   "notifications.title": "الإشعارات",
   "notifications.enable": "تفعيل إشعارات سطح المكتب",
   "notifications.notifyComplete": "إشعار عند اكتمال التنزيلات",
   "notifications.notifyError": "إشعار عند حدوث أخطاء",
   "notifications.soundAlerts": "تشغيل تنبيهات صوتية",
+
   "advanced.title": "خيارات متقدمة",
   "advanced.chunkSize": "حجم القطعة (KB)",
   "advanced.cacheSize": "حجم الذاكرة المؤقتة (MB)",
@@ -500,10 +535,12 @@
   "advanced.exportSuccess": "تم تصدير الإعدادات إلى مجلد التنزيلات في المتصفح.",
   "advanced.importSuccess": "تم استيراد الإعدادات بنجاح.",
   "advanced.importError": "ملف JSON غير صالح. يرجى اختيار ملف تصدير صالح.",
+
   "actions.resetDefaults": "إعادة التعيين إلى الإعدادات الافتراضية",
   "actions.cancel": "إلغاء",
   "actions.save": "حفظ الإعدادات",
   "actions.confirm": "تأكيد إعادة التعيين",
+
   "confirm.title": "هل أنت متأكد؟",
   "confirm.resetBody": "سيتم إعادة جميع الإعدادات إلى قيمها الافتراضية. سيتم حفظ هذا الإجراء مباشرة.",
   "validation.min": "يجب أن يكون {label} ≥ {min}.",
@@ -1748,7 +1785,5 @@
       "copyError": "فشل نسخ {label}",
       "exported": "تم تصدير المعاملة"
     }
-  },
-  "storage.locationSuccess": "تم تعيين موقع التخزين إلى: {path}",
-  "storage.locationError": "فشل في تعيين موقع التخزين"
+  }
 }

@@ -23,6 +23,8 @@
   "storage.location": "স্টোরেজ অবস্থান",
   "storage.locationPick": "স্টোরেজ অবস্থান নির্বাচন করুন",
   "storage.selectLocationTitle": "স্টোরেজ অবস্থান নির্বাচন করুন",
+  "storage.locationSuccess": "স্টোরেজ অবস্থান সেট করা হয়েছে: {path}",
+  "storage.locationError": "স্টোরেজ অবস্থান সেট করতে ব্যর্থ",
   "storage.enterPathPrompt": "স্টোরেজ পাথ লিখুন",
   "storage.browserNoPicker": "ব্রাউজারে Tauri ফাইল পিকার উপলব্ধ নয়",
   "storage.maxSize": "সর্বোচ্চ স্টোরেজ সাইজ (GB)",
@@ -1748,7 +1750,5 @@
       "copyError": "{label} কপি করতে ব্যর্থ",
       "exported": "লেনদেন এক্সপোর্ট করা হয়েছে"
     }
-  },
-  "storage.locationSuccess": "স্টোরেজ অবস্থান সেট করা হয়েছে: {path}",
-  "storage.locationError": "স্টোরেজ অবস্থান সেট করতে ব্যর্থ"
+  }
 }
