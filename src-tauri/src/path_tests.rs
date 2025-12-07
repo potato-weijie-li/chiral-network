@@ -1,4 +1,9 @@
 //! Unit tests for path handling utilities
+//!
+//! Note: This test module contains a copy of the `expand_tilde` function
+//! for standalone testing. The authoritative implementation is in main.rs.
+//! This duplication is intentional to allow tests to run independently
+//! without requiring changes to the main module's visibility.
 
 #[cfg(test)]
 mod tests {
@@ -7,6 +12,8 @@ mod tests {
 
     /// Expand tilde (~) in path to home directory
     /// Uses PathBuf::join() for platform-native path construction
+    /// 
+    /// This is a copy of the function in main.rs for testing purposes.
     fn expand_tilde(path: &str) -> PathBuf {
         let path_str = path.trim();
         
