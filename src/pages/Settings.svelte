@@ -413,19 +413,6 @@
         await invoke("save_app_settings", {
           settingsJson: JSON.stringify(localSettings),
         });
-        
-        // Also persist the storage path to backend settings
-        if (localSettings.storagePath) {
-          try {
-            const savedPath = await invoke<string>("set_download_directory", { 
-              path: localSettings.storagePath 
-            });
-            // Update with the expanded/normalized path from backend
-            localSettings = { ...localSettings, storagePath: savedPath };
-          } catch (pathError) {
-            errorLogger.fileOperationError('Set storage path', pathError instanceof Error ? pathError.message : String(pathError));
-          }
-        }
       } catch (error) {
         errorLogger.fileOperationError('Save settings', error instanceof Error ? error.message : String(error));
       }
