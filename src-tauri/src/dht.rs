@@ -2,6 +2,7 @@ pub mod models;
 // pub mod protocol;
 pub use self::models::*;
 use rand::seq::SliceRandom;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 
 // use self::protocol::*;
 use crate::config::CHAIN_ID;
@@ -5643,6 +5644,8 @@ pub struct DhtService {
     cmd_tx: mpsc::Sender<DhtCommand>,
     event_rx: Arc<Mutex<mpsc::Receiver<DhtEvent>>>,
     peer_id: String,
+    reputation_signing_key: Arc<SigningKey>,
+    reputation_verifying_key: VerifyingKey,
     connected_peers: Arc<Mutex<HashSet<PeerId>>>,
     connected_addrs: HashMap<PeerId, Vec<Multiaddr>>,
     metrics: Arc<Mutex<DhtMetrics>>,
@@ -5949,6 +5952,19 @@ impl DhtService {
         };
         let local_peer_id = PeerId::from(local_key.public());
         let peer_id_str = local_peer_id.to_string();
+
+        // Derive an Ed25519 signing key for reputation verdicts from the libp2p identity
+        let ed_kp = local_key
+            .clone()
+            .try_into_ed25519()
+            .map_err(|_| "DHT keypair is not ed25519")?;
+        let secret = ed_kp.secret();
+        let secret_bytes: &[u8] = secret.as_ref();
+        let secret_array: [u8; 32] = secret_bytes
+            .try_into()
+            .map_err(|_| "invalid ed25519 secret length")?;
+        let reputation_signing_key = SigningKey::from_bytes(&secret_array);
+        let reputation_verifying_key = reputation_signing_key.verifying_key();
 
         // Create a Kademlia behaviour with tuned configuration
         let store = MemoryStore::new(local_peer_id);
@@ -6402,6 +6418,8 @@ impl DhtService {
             cmd_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
             peer_id: peer_id_str,
+            reputation_signing_key: Arc::new(reputation_signing_key),
+            reputation_verifying_key,
             connected_peers,
             connected_addrs: HashMap::new(),
             metrics,
@@ -6430,6 +6448,21 @@ impl DhtService {
     pub fn chunk_size(&self) -> usize {
         // Note: This might need to be adjusted if chunk_manager is the source of truth
         self.chunk_size
+    }
+
+    pub fn peer_id(&self) -> &str {
+        &self.peer_id
+    }
+
+    pub fn reputation_verifying_key_hex(&self) -> String {
+        hex::encode(self.reputation_verifying_key.to_bytes())
+    }
+
+    pub fn sign_transaction_verdict(
+        &self,
+        verdict: &mut crate::reputation::TransactionVerdict,
+    ) -> Result<(), String> {
+        verdict.sign_with(&self.reputation_signing_key, &self.peer_id, verdict.issuer_seq_no)
     }
 
     pub async fn start_file_heartbeat(&self, file_hash: &str) -> Result<(), String> {

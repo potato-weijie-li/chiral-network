@@ -201,6 +201,9 @@ pub struct TransactionVerdict {
     pub issuer_seq_no: u64,
     /// hex-encoded ed25519 signature over the canonical signable payload
     pub issuer_sig: String,
+    /// optional hex-encoded verifying key for signature validation
+    #[serde(default)]
+    pub issuer_pubkey: Option<String>,
     /// optional on-chain receipt pointer (compact representation)
     pub tx_receipt: Option<String>,
     /// optional evidence blobs (references or small encoded blobs)
@@ -221,6 +224,14 @@ impl TransactionVerdict {
         // tx_hash is now optional (NULL for non-payment complaints)
         if self.issuer_id == self.target_id {
             return Err("issuer_id must not equal target_id".into());
+        }
+        if self.issuer_sig.is_empty() {
+            return Err("issuer_sig missing".into());
+        }
+        if let Some(pk) = &self.issuer_pubkey {
+            if pk.len() < 32 {
+                return Err("issuer_pubkey too short".into());
+            }
         }
         Ok(())
     }
@@ -281,6 +292,7 @@ impl TransactionVerdict {
 
         let signature = signing_key.sign(&serialized);
         self.issuer_sig = hex::encode(signature.to_bytes());
+        self.issuer_pubkey = Some(hex::encode(signing_key.verifying_key().to_bytes()));
         Ok(())
     }
 
@@ -722,6 +734,89 @@ impl ReputationDhtService {
         }
     }
 
+    async fn load_verdicts_for_key(
+        &self,
+        key: &str,
+    ) -> Result<Vec<TransactionVerdict>, String> {
+        let dht_service = self
+            .dht_service
+            .as_ref()
+            .ok_or("DHT service not initialized")?;
+
+        let timeout_ms = 5000;
+        match dht_service
+            .synchronous_search_metadata(key.to_string(), timeout_ms)
+            .await
+        {
+            Ok(Some(metadata)) => {
+                // Try array first, then single
+                if let Ok(list) = serde_json::from_slice::<Vec<TransactionVerdict>>(&metadata.file_data)
+                {
+                    return Ok(list);
+                }
+                if let Ok(single) = serde_json::from_slice::<TransactionVerdict>(&metadata.file_data)
+                {
+                    return Ok(vec![single]);
+                }
+                tracing::warn!("Failed to parse verdict list for key {}", key);
+                Ok(vec![])
+            }
+            Ok(None) => Ok(vec![]),
+            Err(e) => {
+                tracing::warn!("DHT search failed for key {}: {}", key, e);
+                Ok(vec![])
+            }
+        }
+    }
+
+    fn merge_verdict_lists(
+        existing: Vec<TransactionVerdict>,
+        new_verdict: TransactionVerdict,
+        max_entries: usize,
+    ) -> Vec<TransactionVerdict> {
+        use std::collections::HashMap;
+
+        let mut map: HashMap<String, TransactionVerdict> = HashMap::new();
+
+        for verdict in existing.into_iter().chain(std::iter::once(new_verdict)) {
+            let key = format!(
+                "{}:{}:{}",
+                verdict.issuer_id,
+                verdict.tx_hash.as_deref().unwrap_or("no_tx"),
+                verdict.issuer_seq_no
+            );
+            match map.get(&key) {
+                Some(existing) if existing.issued_at >= verdict.issued_at => {}
+                _ => {
+                    map.insert(key, verdict);
+                }
+            }
+        }
+
+        let mut merged: Vec<TransactionVerdict> = map.into_values().collect();
+        merged.sort_by(|a, b| b.issued_at.cmp(&a.issued_at));
+        if merged.len() > max_entries {
+            merged.truncate(max_entries);
+        }
+        merged
+    }
+
+    fn verify_verdict_signature(verdict: &TransactionVerdict) -> Result<bool, String> {
+        if let Some(pk_hex) = &verdict.issuer_pubkey {
+            let pk_bytes = hex::decode(pk_hex).map_err(|e| format!("invalid issuer_pubkey: {}", e))?;
+            let pk_array: [u8; 32] = pk_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| "issuer_pubkey wrong length")?;
+            let verifying_key = VerifyingKey::from_bytes(&pk_array)
+                .map_err(|e| format!("invalid verifying key: {}", e))?;
+            return verdict.verify_signature(&verifying_key);
+        }
+
+        // If no pubkey is provided (legacy entries), accept to remain backwards-compatible
+        Ok(true)
+    }
+
     /// Store a TransactionVerdict into the DHT for the given target.
     /// Stores under TWO keys:
     /// 1. Issuer+Target key (for querying "verdicts I issued")
@@ -739,9 +834,6 @@ impl ReputationDhtService {
         verdict
             .validate()
             .map_err(|e| format!("Invalid verdict: {}", e))?;
-
-        let serialized =
-            serde_json::to_vec(verdict).map_err(|e| format!("Serialization error: {}", e))?;
 
         let tx_hash_str = verdict
             .tx_hash
@@ -770,11 +862,21 @@ impl ReputationDhtService {
             issuer_target_key
         );
 
+        // Merge with existing issuer+target history to avoid last-writer-wins
+        let issuer_list = self
+            .load_verdicts_for_key(&issuer_target_key)
+            .await
+            .unwrap_or_default();
+        let merged_issuer_list =
+            Self::merge_verdict_lists(issuer_list, verdict.clone(), 32 /* cap for inline */);
+        let serialized_issuer =
+            serde_json::to_vec(&merged_issuer_list).map_err(|e| format!("Serialization error: {}", e))?;
+
         let metadata1 = crate::dht::models::FileMetadata {
             merkle_root: issuer_target_key.clone(),
             file_name: format!("tx_verdict_{}_{}.json", verdict.issuer_id, tx_hash_str),
-            file_size: serialized.len() as u64,
-            file_data: serialized.clone(),
+            file_size: serialized_issuer.len() as u64,
+            file_data: serialized_issuer,
             seeders: vec![verdict.issuer_id.clone()],
             created_at: verdict.issued_at,
             mime_type: Some("application/json".to_string()),
@@ -808,14 +910,23 @@ impl ReputationDhtService {
             target_only_key
         );
 
+        let target_list = self
+            .load_verdicts_for_key(&target_only_key)
+            .await
+            .unwrap_or_default();
+        let merged_target_list =
+            Self::merge_verdict_lists(target_list, verdict.clone(), 32 /* keep within inline limit */);
+        let serialized_target =
+            serde_json::to_vec(&merged_target_list).map_err(|e| format!("Serialization error: {}", e))?;
+
         let metadata2 = crate::dht::models::FileMetadata {
             merkle_root: target_only_key.clone(),
             file_name: format!(
                 "tx_verdict_about_{}_{}.json",
                 verdict.target_id, tx_hash_str
             ),
-            file_size: serialized.len() as u64,
-            file_data: serialized,
+            file_size: serialized_target.len() as u64,
+            file_data: serialized_target,
             seeders: vec![verdict.issuer_id.clone()],
             created_at: verdict.issued_at,
             mime_type: Some("application/json".to_string()),
@@ -867,53 +978,19 @@ impl ReputationDhtService {
             search_key
         );
 
-        // synchronous_search_metadata already checks local cache first
-        println!("🔍 Calling synchronous_search_metadata with 5000ms timeout");
-        match dht_service
-            .synchronous_search_metadata(search_key.clone(), 5000)
-            .await
-        {
-            Ok(Some(metadata)) => {
-                println!(
-                    "✅ Found verdict metadata, size={} bytes",
-                    metadata.file_data.len()
-                );
-                tracing::info!(
-                    "✅ Found verdict metadata, size={} bytes",
-                    metadata.file_data.len()
-                );
-                // Try to deserialize the file data as a TransactionVerdict
-                match serde_json::from_slice::<TransactionVerdict>(&metadata.file_data) {
-                    Ok(verdict) => {
-                        println!(
-                            "✅ Deserialized verdict: issuer={}, outcome={:?}",
-                            verdict.issuer_id, verdict.outcome
-                        );
-                        tracing::info!(
-                            "✅ Found verdict: issuer={}, outcome={:?}",
-                            verdict.issuer_id,
-                            verdict.outcome
-                        );
-                        Ok(vec![verdict])
-                    }
-                    Err(e) => {
-                        println!("❌ Failed to deserialize verdict: {}", e);
-                        tracing::warn!("❌ Failed to deserialize verdict: {}", e);
-                        Ok(vec![])
-                    }
-                }
-            }
-            Ok(None) => {
-                println!("❌ No verdicts found about target: {}", target_id);
-                tracing::info!("❌ No verdicts found about target: {}", target_id);
-                Ok(vec![])
-            }
-            Err(e) => {
-                println!("❌ DHT search failed: {}", e);
-                tracing::warn!("❌ DHT search failed: {}", e);
-                Ok(vec![]) // Return empty instead of error to not break UI
-            }
-        }
+        let verdicts = self.load_verdicts_for_key(&search_key).await.unwrap_or_default();
+        let verified: Vec<TransactionVerdict> = verdicts
+            .into_iter()
+            .filter(|v| Self::verify_verdict_signature(v).unwrap_or(false))
+            .collect();
+
+        println!("✅ Retrieved {} verified verdicts", verified.len());
+        tracing::info!(
+            "✅ Retrieved {} verified verdicts for peer: {}",
+            verified.len(),
+            target_id
+        );
+        Ok(verified)
     }
 
     pub async fn store_merkle_root(&self, epoch: &ReputationEpoch) -> Result<(), String> {

@@ -7146,7 +7146,7 @@ fn main() {
     // Reputation system Tauri commands
     #[tauri::command]
     async fn publish_reputation_verdict(
-        verdict: reputation::TransactionVerdict,
+        mut verdict: reputation::TransactionVerdict,
         state: State<'_, AppState>,
     ) -> Result<(), String> {
         println!("📊 RUST: publish_reputation_verdict called");
@@ -7162,6 +7162,27 @@ fn main() {
         let dht = dht_guard
             .as_ref()
             .ok_or_else(|| "DHT service not initialized".to_string())?;
+
+        // Ensure issuer fields are populated/signed
+        if verdict.issuer_id.is_empty() {
+            verdict.issuer_id = dht.peer_id().to_string();
+        }
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+            .as_secs();
+        if verdict.issuer_seq_no == 0 {
+            verdict.issuer_seq_no = now_ts;
+        }
+        if verdict.issued_at == 0 {
+            verdict.issued_at = now_ts;
+        }
+        if verdict.issuer_sig.is_empty() {
+            dht.sign_transaction_verdict(&mut verdict)?;
+            verdict.issuer_pubkey = Some(dht.reputation_verifying_key_hex());
+        } else if verdict.issuer_pubkey.is_none() {
+            verdict.issuer_pubkey = Some(dht.reputation_verifying_key_hex());
+        }
 
         // Create ReputationDhtService and store verdict
         let mut reputation_dht = reputation::ReputationDhtService::new();

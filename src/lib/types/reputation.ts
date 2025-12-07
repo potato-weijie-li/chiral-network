@@ -31,6 +31,7 @@ export interface TransactionVerdict {
   issuer_id: string;           // Peer who issued verdict
   issuer_seq_no: number;       // Monotonic counter per issuer
   issuer_sig: string;          // Signature over verdict
+  issuer_pubkey?: string;      // Optional verifying key (hex) for signature validation
   tx_receipt?: string;         // Optional blockchain receipt pointer
   evidence_blobs?: string[];   // Evidence (signed messages, proofs, logs)
 }

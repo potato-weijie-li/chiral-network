@@ -8,6 +8,7 @@
   import Card from '$lib/components/ui/card.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import PeerSelectionService, { type PeerMetrics as BackendPeerMetrics } from '$lib/services/peerSelectionService';
+  import { scoreVerdicts } from '$lib/services/reputationService';
   import { invoke } from '@tauri-apps/api/core';
   import { debounce } from '$lib/utils/debounce';
 
@@ -183,23 +184,18 @@
           console.log(`🔍 Got verdicts response:`, verdicts);
           
           if (Array.isArray(verdicts) && verdicts.length > 0) {
-            // Add verdict count to interactions
-            const verdictCount = verdicts.length;
-            const goodVerdicts = verdicts.filter((v: any) => v.outcome === 'good').length;
-            const badVerdicts = verdicts.filter((v: any) => v.outcome === 'bad').length;
-            const disputedVerdicts = verdicts.filter((v: any) => v.outcome === 'disputed').length;
-            
+            const { score: verdictScore, total: verdictCount } = scoreVerdicts(verdicts as any);
+
             totalInteractions = Math.max(totalInteractions, verdictCount);
-            successfulInteractions = Math.max(successfulInteractions, goodVerdicts);
-            
-            // Recalculate score based on verdicts (good=1.0, disputed=0.5, bad=0.0)
+            const inferredGood = Math.round(verdictScore * verdictCount);
+            successfulInteractions = Math.max(successfulInteractions, inferredGood);
+
             if (verdictCount > 0) {
-              const verdictScore = (goodVerdicts * 1.0 + disputedVerdicts * 0.5 + badVerdicts * 0.0) / verdictCount;
               // Blend verdict score with peer metrics score (70% verdicts, 30% metrics)
               score = verdictScore * 0.7 + score * 0.3;
             }
             
-            console.log(`✅ Peer ${m.peer_id.substring(0, 20)}...: ${verdictCount} verdicts (${goodVerdicts} good, ${badVerdicts} bad, ${disputedVerdicts} disputed) -> score: ${score.toFixed(2)}, interactions: ${successfulInteractions}/${totalInteractions}`);
+            console.log(`✅ Peer ${m.peer_id.substring(0, 20)}...: ${verdictCount} verdicts -> score: ${score.toFixed(2)}, interactions: ${successfulInteractions}/${totalInteractions}`);
           } else {
             console.log(`❌ No verdicts found for peer ${m.peer_id.substring(0, 20)}...`);
           }

@@ -4,12 +4,57 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type { TransactionVerdict } from '$lib/types/reputation';
+import { DEFAULT_REPUTATION_CONFIG, type TransactionVerdict } from '$lib/types/reputation';
 import {
   reputationRateLimiter,
   RateLimitError,
   type RateLimitDecision,
 } from './reputationRateLimiter';
+
+// Compute a normalized score from a set of verdicts with TTL, dedup, and weights.
+export function scoreVerdicts(
+  verdicts: TransactionVerdict[],
+  verdictTtlSeconds: number = DEFAULT_REPUTATION_CONFIG.verdictTTL,
+  nowSeconds: number = Math.floor(Date.now() / 1000)
+): { score: number; total: number } {
+  if (!Array.isArray(verdicts) || verdicts.length === 0) {
+    return { score: 0, total: 0 };
+  }
+
+  const cutoff = Math.max(0, nowSeconds - verdictTtlSeconds);
+  const deduped = new Map<string, TransactionVerdict>();
+
+  for (const verdict of verdicts) {
+    if (!verdict || typeof verdict.issued_at !== 'number' || verdict.issued_at < cutoff) {
+      continue;
+    }
+
+    // Deduplicate on issuer + tx + seq so replays/updates do not inflate counts.
+    const txKey = verdict.tx_hash ?? 'no_tx';
+    const key = `${verdict.issuer_id}:${txKey}:${verdict.issuer_seq_no}`;
+    const existing = deduped.get(key);
+    if (!existing || existing.issued_at < verdict.issued_at) {
+      deduped.set(key, verdict);
+    }
+  }
+
+  const finalVerdicts = Array.from(deduped.values());
+  if (finalVerdicts.length === 0) {
+    return { score: 0, total: 0 };
+  }
+
+  let good = 0;
+  let disputed = 0;
+
+  for (const verdict of finalVerdicts) {
+    if (verdict.outcome === 'good') good += 1;
+    else if (verdict.outcome === 'disputed') disputed += 1;
+  }
+
+  const total = finalVerdicts.length;
+  const score = total > 0 ? (good * 1.0 + disputed * 0.5) / total : 0;
+  return { score, total };
+}
 
 class ReputationService {
   async publishVerdict(verdict: Partial<TransactionVerdict>): Promise<RateLimitDecision> {
@@ -39,6 +84,7 @@ class ReputationService {
         issuer_id: issuerId,
         issuer_seq_no: verdict.issuer_seq_no || Date.now(),
         issuer_sig: verdict.issuer_sig || '',
+        issuer_pubkey: verdict.issuer_pubkey,
         tx_receipt: verdict.tx_receipt,
         evidence_blobs: verdict.evidence_blobs,
       };
@@ -77,23 +123,9 @@ class ReputationService {
 
   async getPeerScore(peerId: string): Promise<number> {
     const verdicts = await this.getReputationVerdicts(peerId);
-    if (verdicts.length === 0) return 0;
-
-    let totalWeight = 0;
-    let totalValue = 0;
-
-    for (const verdict of verdicts) {
-      const weight = 1.0;
-      const value =
-        verdict.outcome === 'good' ? 1.0 : verdict.outcome === 'disputed' ? 0.5 : 0.0;
-
-      totalWeight += weight;
-      totalValue += weight * value;
-    }
-
-    return totalWeight > 0 ? totalValue / totalWeight : 0;
+    const { score } = scoreVerdicts(verdicts);
+    return score;
   }
 }
 
 export const reputationService = new ReputationService();
-
