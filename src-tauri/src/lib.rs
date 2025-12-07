@@ -43,3 +43,7 @@ pub mod reputation;
 
 // Logger module for file-based logging
 pub mod logger;
+
+// Path utilities tests
+#[cfg(test)]
+mod path_tests;

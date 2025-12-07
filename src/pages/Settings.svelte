@@ -413,6 +413,19 @@
         await invoke("save_app_settings", {
           settingsJson: JSON.stringify(localSettings),
         });
+        
+        // Also persist the storage path to backend settings
+        if (localSettings.storagePath) {
+          try {
+            const savedPath = await invoke<string>("set_download_directory", { 
+              path: localSettings.storagePath 
+            });
+            // Update with the expanded/normalized path from backend
+            localSettings = { ...localSettings, storagePath: savedPath };
+          } catch (pathError) {
+            errorLogger.fileOperationError('Set storage path', pathError instanceof Error ? pathError.message : String(pathError));
+          }
+        }
       } catch (error) {
         errorLogger.fileOperationError('Save settings', error instanceof Error ? error.message : String(error));
       }
@@ -691,33 +704,8 @@
       });
 
       if (typeof result === "string") {
-        // Call backend to validate and save the path
-        try {
-          const savedPath = await invoke<string>(
-            "set_download_directory",
-            { path: result }
-          );
-          
-          // Update UI with the saved path (which is the expanded, platform-native path)
-          localSettings = { ...localSettings, storagePath: savedPath };
-          
-          showToast(
-            tr("storage.locationSuccess", { path: savedPath }),
-            "success"
-          );
-        } catch (backendError) {
-          errorLogger.fileOperationError(
-            'Set storage path',
-            backendError instanceof Error ? backendError.message : String(backendError)
-          );
-          // Show warning to user that backend save failed
-          showToast(
-            tr("storage.locationError"),
-            "warning"
-          );
-          // Still update UI even if backend save fails (will be saved when user clicks Save)
-          localSettings = { ...localSettings, storagePath: result };
-        }
+        // Just update local state - user must click Save to persist
+        localSettings = { ...localSettings, storagePath: result };
       }
     } catch {
       // Fallback for browser environment
@@ -915,11 +903,12 @@
 
     onMount(async () => {
     // Get the canonical download directory from backend (single source of truth)
+    let backendStoragePath = "";
     try {
-      // Pass null/undefined to get the default when no frontend settings exist
-      const defaultPath = await invoke<string>("get_download_directory");
-      defaultSettings.storagePath = defaultPath;
-      storagePathPlaceholder = defaultPath; // Update placeholder to show actual default
+      // Backend returns the actual configured path from settings.json
+      backendStoragePath = await invoke<string>("get_download_directory");
+      defaultSettings.storagePath = backendStoragePath;
+      storagePathPlaceholder = backendStoragePath; // Update placeholder to show actual default
     } catch (e) {
       errorLogger.fileOperationError('Get download directory', e instanceof Error ? e.message : String(e));
       // Fallback if backend fails
@@ -932,8 +921,11 @@
     if (stored) {
   try {
     const loadedSettings: AppSettings = JSON.parse(stored);
-    // Ensure storagePath is set to default if missing or empty
-    if (!loadedSettings.storagePath || loadedSettings.storagePath.trim() === "") {
+    // Use the backend storage path as the authoritative source
+    // This ensures settings.json is the single source of truth for storage path
+    if (backendStoragePath) {
+      loadedSettings.storagePath = backendStoragePath;
+    } else if (!loadedSettings.storagePath || loadedSettings.storagePath.trim() === "") {
       loadedSettings.storagePath = defaultSettings.storagePath;
     }
     // Set the store, which ensures it is available globally
@@ -943,6 +935,12 @@
     savedSettings = JSON.parse(JSON.stringify(localSettings));
   } catch (e) {
     errorLogger.fileOperationError('Load settings', e instanceof Error ? e.message : String(e));
+  }
+} else {
+  // No stored settings - use backend path
+  if (backendStoragePath) {
+    localSettings = { ...localSettings, storagePath: backendStoragePath };
+    savedSettings = { ...savedSettings, storagePath: backendStoragePath };
   }
 }
 
