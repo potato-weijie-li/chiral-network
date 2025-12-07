@@ -20,6 +20,8 @@
   "storage.location": "存储位置",
   "storage.locationPick": "选择存储位置",
   "storage.selectLocationTitle": "选择存储位置",
+  "storage.locationSuccess": "存储位置已设置为：{path}",
+  "storage.locationError": "设置存储位置失败",
   "storage.enterPathPrompt": "输入存储路径",
   "storage.browserNoPicker": "Tauri文件选择器在浏览器中不可用",
   "storage.maxSize": "最大存储大小 (GB)",

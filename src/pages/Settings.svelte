@@ -686,12 +686,12 @@
         multiple: false,
         defaultPath: localSettings.storagePath.startsWith("~/")
           ? localSettings.storagePath.replace("~", home)
-          : localSettings.storagePath,
+          : localSettings.storagePath || undefined,
         title: tr("storage.selectLocationTitle"),
       });
 
       if (typeof result === "string") {
-        // Reassign the entire object to trigger reactivity
+        // Just update local state - user must click Save to persist
         localSettings = { ...localSettings, storagePath: result };
       }
     } catch {
@@ -890,11 +890,12 @@
 
     onMount(async () => {
     // Get the canonical download directory from backend (single source of truth)
+    let backendStoragePath = "";
     try {
-      // Pass null/undefined to get the default when no frontend settings exist
-      const defaultPath = await invoke<string>("get_download_directory");
-      defaultSettings.storagePath = defaultPath;
-      storagePathPlaceholder = defaultPath; // Update placeholder to show actual default
+      // Backend returns the actual configured path from settings.json
+      backendStoragePath = await invoke<string>("get_download_directory");
+      defaultSettings.storagePath = backendStoragePath;
+      storagePathPlaceholder = backendStoragePath; // Update placeholder to show actual default
     } catch (e) {
       errorLogger.fileOperationError('Get download directory', e instanceof Error ? e.message : String(e));
       // Fallback if backend fails
@@ -907,8 +908,11 @@
     if (stored) {
   try {
     const loadedSettings: AppSettings = JSON.parse(stored);
-    // Ensure storagePath is set to default if missing or empty
-    if (!loadedSettings.storagePath || loadedSettings.storagePath.trim() === "") {
+    // Use the backend storage path as the authoritative source
+    // This ensures settings.json is the single source of truth for storage path
+    if (backendStoragePath) {
+      loadedSettings.storagePath = backendStoragePath;
+    } else if (!loadedSettings.storagePath || loadedSettings.storagePath.trim() === "") {
       loadedSettings.storagePath = defaultSettings.storagePath;
     }
     // Set the store, which ensures it is available globally
@@ -918,6 +922,12 @@
     savedSettings = JSON.parse(JSON.stringify(localSettings));
   } catch (e) {
     errorLogger.fileOperationError('Load settings', e instanceof Error ? e.message : String(e));
+  }
+} else {
+  // No stored settings - use backend path
+  if (backendStoragePath) {
+    localSettings = { ...localSettings, storagePath: backendStoragePath };
+    savedSettings = { ...savedSettings, storagePath: backendStoragePath };
   }
 }
 

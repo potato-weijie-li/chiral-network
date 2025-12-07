@@ -23,6 +23,8 @@
   "storage.location": "भंडारण स्थान",
   "storage.locationPick": "भंडारण स्थान चुनें",
   "storage.selectLocationTitle": "भंडारण स्थान चुनें",
+  "storage.locationSuccess": "स्टोरेज स्थान सेट किया गया: {path}",
+  "storage.locationError": "स्टोरेज स्थान सेट करने में विफल",
   "storage.enterPathPrompt": "भंडारण पथ दर्ज करें",
   "storage.browserNoPicker": "ब्राउज़र में Tauri फ़ाइल चयनकर्ता उपलब्ध नहीं है",
   "storage.maxSize": "अधिकतम भंडारण आकार (GB)",

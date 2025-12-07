@@ -24,6 +24,8 @@
   "storage.location": "Emplacement de stockage",
   "storage.locationPick": "Choisir un emplacement de stockage",
   "storage.selectLocationTitle": "Sélectionner l’emplacement de stockage",
+  "storage.locationSuccess": "Emplacement de stockage défini sur : {path}",
+  "storage.locationError": "Échec de la définition de l'emplacement de stockage",
   "storage.enterPathPrompt": "Saisir le chemin de stockage",
   "storage.browserNoPicker": "Le sélecteur de fichiers Tauri n’est pas disponible dans le navigateur",
   "storage.maxSize": "Taille maximale de stockage (Go)",

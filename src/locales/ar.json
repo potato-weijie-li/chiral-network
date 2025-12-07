@@ -23,6 +23,8 @@
   "storage.location": "موقع التخزين",
   "storage.locationPick": "اختر موقع التخزين",
   "storage.selectLocationTitle": "تحديد موقع التخزين",
+  "storage.locationSuccess": "تم تعيين موقع التخزين إلى: {path}",
+  "storage.locationError": "فشل في تعيين موقع التخزين",
   "storage.enterPathPrompt": "أدخِل مسار التخزين",
   "storage.browserNoPicker": "أداة اختيار الملفات من Tauri غير متاحة في المتصفّح",
   "storage.maxSize": "الحد الأقصى لحجم التخزين (غيغابايت)",

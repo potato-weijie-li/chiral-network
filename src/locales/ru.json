@@ -23,6 +23,8 @@
   "storage.location": "Расположение хранилища",
   "storage.locationPick": "Выбрать расположение хранилища",
   "storage.selectLocationTitle": "Выбрать расположение хранилища",
+  "storage.locationSuccess": "Расположение хранилища установлено: {path}",
+  "storage.locationError": "Не удалось установить расположение хранилища",
   "storage.enterPathPrompt": "Введите путь к хранилищу",
   "storage.browserNoPicker": "Выбор файлов Tauri недоступен в браузере",
   "storage.maxSize": "Макс. размер хранилища (ГБ)",
