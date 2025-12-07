@@ -67,6 +67,7 @@
   let searchQuery = '';
   let debouncedSearchQuery = ''; // Debounced version for filtering
   let isLoading = true;
+  let isRefreshing = false; // prevents stacking refreshes
   let showAnalytics = persistedToggles.showAnalytics;
   let showRelayLeaderboard = persistedToggles.showRelayLeaderboard;
   let currentPage = 1;
@@ -169,7 +170,27 @@
       const metrics: BackendPeerMetrics[] = await PeerSelectionService.getPeerMetrics();
       console.log(`📊 Loading ${metrics.length} peers from backend`);
 
-      // Fetch reputation verdicts for all peers in parallel
+      // Fetch reputation verdicts for a capped subset to avoid blocking the UI
+      const sorted = [...metrics].sort((a, b) => b.transfer_count - a.transfer_count);
+      const MAX_VERDICT_FETCH = 20;
+      const verdictTargets = new Set(sorted.slice(0, MAX_VERDICT_FETCH).map((m) => m.peer_id));
+
+      // Best-effort fetch with a short timeout to avoid long hangs
+      const fetchVerdicts = async (peerId: string) => {
+        if (!verdictTargets.has(peerId)) return [];
+        const timeoutMs = 1200;
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('verdict timeout')), timeoutMs)
+        );
+        return await Promise.race([
+          invoke('get_reputation_verdicts', { peerId }),
+          timeout
+        ]).catch((err) => {
+          console.debug(`verdict fetch skipped for ${peerId}:`, err?.message || err);
+          return [];
+        });
+      };
+
       const mappedPeersPromises = metrics.map(async (m) => {
         let score = PeerSelectionService.compositeScoreFromMetrics(m);
         let totalInteractions = Math.max(1, m.transfer_count);
@@ -180,7 +201,7 @@
         // Try to get reputation verdicts to augment interaction count AND score
         try {
           console.log(`🔍 Fetching verdicts for peer: ${m.peer_id}`);
-          const verdicts = await invoke('get_reputation_verdicts', { peerId: m.peer_id });
+          const verdicts = await fetchVerdicts(m.peer_id);
           console.log(`🔍 Got verdicts response:`, verdicts);
           
           if (Array.isArray(verdicts) && verdicts.length > 0) {
@@ -393,10 +414,13 @@
   });
 
   async function refreshData() {
+    if (isRefreshing) return;
+    isRefreshing = true;
     isLoading = true;
     await loadPeersFromBackend();
     await loadMyRelayStats();
     isLoading = false;
+    isRefreshing = false;
   }
 </script>
 
