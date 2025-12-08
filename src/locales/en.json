@@ -786,7 +786,9 @@
     "resetDefaults": "Reset to Defaults",
     "lockWallet": "Lock Wallet",
     "verifying": "Verifying...",
-    "confirm": "Confirm"
+    "confirm": "Confirm",
+    "sync": "Sync",
+    "syncing": "Syncing..."
   },
   "placeholders": {
     "importPrivateKey": "Enter private key to import",
@@ -1708,7 +1710,9 @@
       "transaction": {
         "cancelled": "Transaction cancelled",
         "submitted": "Transaction submitted!",
-        "error": "Transaction failed: {error}"
+        "error": "Transaction failed: {error}",
+        "synced": "Transactions synced successfully!",
+        "syncError": "Failed to sync transactions: {error}"
       },
       "created": "Account Created Successfully!",
       "createError": "Failed to create account: {error}",

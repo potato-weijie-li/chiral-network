@@ -623,7 +623,9 @@
     "resetDefaults": "기본값으로 재설정",
     "lockWallet": "지갑 잠금",
     "verifying": "확인 중...",
-    "confirm": "확인"
+    "confirm": "확인",
+    "sync": "동기화",
+    "syncing": "동기화 중..."
   },
   "placeholders": {
     "importPrivateKey": "가져올 개인 키를 입력",
@@ -1533,9 +1535,11 @@
         "missing": "No private key available"
       },
       "transaction": {
-        "cancelled": "Transaction cancelled",
-        "submitted": "Transaction submitted!",
-        "error": "Transaction failed: {error}"
+        "cancelled": "거래가 취소되었습니다",
+        "submitted": "거래가 제출되었습니다!",
+        "error": "거래 실패: {error}",
+        "synced": "거래가 성공적으로 동기화되었습니다!",
+        "syncError": "거래 동기화 실패: {error}"
       },
       "created": "Account Created Successfully!",
       "createError": "Failed to create account: {error}",

@@ -638,7 +638,9 @@
     "resetDefaults": "Restablecer valores predeterminados",
     "lockWallet": "Bloquear billetera",
     "verifying": "Verificando...",
-    "confirm": "Confirmar"
+    "confirm": "Confirmar",
+    "sync": "Sincronizar",
+    "syncing": "Sincronizando..."
   },
   "placeholders": {
     "importPrivateKey": "Introduce la clave privada para importar",
@@ -1546,9 +1548,11 @@
         "missing": "No private key available"
       },
       "transaction": {
-        "cancelled": "Transaction cancelled",
-        "submitted": "Transaction submitted!",
-        "error": "Transaction failed: {error}"
+        "cancelled": "Transacción cancelada",
+        "submitted": "¡Transacción enviada!",
+        "error": "Error en la transacción: {error}",
+        "synced": "¡Transacciones sincronizadas correctamente!",
+        "syncError": "Error al sincronizar transacciones: {error}"
       },
       "created": "Account Created Successfully!",
       "createError": "Failed to create account: {error}",

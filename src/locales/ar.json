@@ -787,7 +787,9 @@
     "resetDefaults": "إعادة إلى الإعدادات الافتراضية",
     "lockWallet": "قفل المحفظة",
     "verifying": "جارٍ التحقق...",
-    "confirm": "تأكيد"
+    "confirm": "تأكيد",
+    "sync": "مزامنة",
+    "syncing": "جاري المزامنة..."
   },
   "placeholders": {
     "importPrivateKey": "أدخل المفتاح الخاص للاستيراد",
@@ -1704,7 +1706,9 @@
       "transaction": {
         "cancelled": "تم إلغاء المعاملة",
         "submitted": "تم إرسال المعاملة!",
-        "error": "فشلت المعاملة: {error}"
+        "error": "فشلت المعاملة: {error}",
+        "synced": "تمت مزامنة المعاملات بنجاح!",
+        "syncError": "فشل في مزامنة المعاملات: {error}"
       },
       "created": "تم إنشاء الحساب بنجاح!",
       "createError": "فشل إنشاء الحساب: {error}",

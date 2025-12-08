@@ -753,7 +753,9 @@
     "resetDefaults": "Restaurar Padrões",
     "lockWallet": "Bloquear Carteira",
     "verifying": "Verificando...",
-    "confirm": "Confirmar"
+    "confirm": "Confirmar",
+    "sync": "Sincronizar",
+    "syncing": "Sincronizando..."
   },
   "placeholders": {
     "importPrivateKey": "Digite a chave privada para importar",
@@ -1670,7 +1672,9 @@
       "transaction": {
         "cancelled": "Transaction cancelled",
         "submitted": "Transaction submitted!",
-        "error": "Transaction failed: {error}"
+        "error": "Transaction failed: {error}",
+        "synced": "Transações sincronizadas com sucesso!",
+        "syncError": "Falha ao sincronizar transações: {error}"
       },
       "created": "Account Created Successfully!",
       "createError": "Failed to create account: {error}",

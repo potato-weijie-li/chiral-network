@@ -733,7 +733,9 @@
     "resetDefaults": "Сбросить к значениям по умолчанию",
     "lockWallet": "Заблокировать кошелек",
     "verifying": "Проверка...",
-    "confirm": "Подтвердить"
+    "confirm": "Подтвердить",
+    "sync": "Синхронизировать",
+    "syncing": "Синхронизация..."
   },
   "placeholders": {
     "importPrivateKey": "Введите приватный ключ для импорта",
@@ -1545,9 +1547,11 @@
         "missing": "No private key available"
       },
       "transaction": {
-        "cancelled": "Transaction cancelled",
-        "submitted": "Transaction submitted!",
-        "error": "Transaction failed: {error}"
+        "cancelled": "Транзакция отменена",
+        "submitted": "Транзакция отправлена!",
+        "error": "Ошибка транзакции: {error}",
+        "synced": "Транзакции успешно синхронизированы!",
+        "syncError": "Не удалось синхронизировать транзакции: {error}"
       },
       "created": "Account Created Successfully!",
       "createError": "Failed to create account: {error}",
