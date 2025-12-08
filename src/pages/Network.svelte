@@ -525,13 +525,6 @@
           return
         }
         
-        // Check if user cancelled during connection attempt
-        if (cancelConnection) {
-          await stopDht()
-          dhtEvents = [...dhtEvents, '⚠ Connection cancelled by user']
-          return
-        }
-        
         try {
           // Try connecting to the first available bootstrap node with 10s timeout
           await connectWithTimeout(dhtBootstrapNodes[0], 10000)
