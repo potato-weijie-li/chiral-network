@@ -94,6 +94,9 @@
   let selectedTransaction: any = null;
   let showTransactionReceipt = false;
   
+  // Transaction sync state
+  let isSyncingTransactions = false;
+  
   // 2FA State
   // In a real app, this status should be loaded with the user's account data.
   let is2faEnabled = false; 
@@ -654,6 +657,24 @@
   // Automatically calculate accurate totals when account is loaded
   $: if ($etcAccount && isGethRunning && !$accurateTotals && !$isCalculatingAccurateTotals) {
     calculateAccurateTotals();
+  }
+
+  async function syncTransactions() {
+    if (!isTauri || !isGethRunning || !$etcAccount || isSyncingTransactions) return
+    
+    isSyncingTransactions = true
+    try {
+      await walletService.refreshTransactions()
+      showToast(tr('toasts.account.transaction.synced'), 'success')
+    } catch (error) {
+      console.error('Failed to sync transactions:', error)
+      showToast(
+        tr('toasts.account.transaction.syncError', { values: { error: String(error) } }),
+        'error'
+      )
+    } finally {
+      isSyncingTransactions = false
+    }
   }
 
 
@@ -2242,7 +2263,19 @@
   <Card class="p-6 mt-4">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-lg font-semibold">{$t('transactions.title')}</h2>
-      <History class="h-5 w-5 text-muted-foreground" />
+      <div class="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          on:click={syncTransactions}
+          disabled={!isGethRunning || isSyncingTransactions || $transactionPagination.isLoading}
+          class="flex items-center gap-2"
+        >
+          <RefreshCw class="h-4 w-4 {isSyncingTransactions ? 'animate-spin' : ''}" />
+          {isSyncingTransactions ? $t('actions.syncing') : $t('actions.sync')}
+        </Button>
+        <History class="h-5 w-5 text-muted-foreground" />
+      </div>
     </div>
 
     <!-- Scan Range Info -->

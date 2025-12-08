@@ -764,7 +764,9 @@
     "resetDefaults": "Réinitialiser par défaut",
     "lockWallet": "Verrouiller le portefeuille",
     "verifying": "Vérification...",
-    "confirm": "Confirmer"
+    "confirm": "Confirmer",
+    "sync": "Synchroniser",
+    "syncing": "Synchronisation..."
   },
   "placeholders": {
     "importPrivateKey": "Saisir la clé privée à importer",
@@ -1681,7 +1683,9 @@
       "transaction": {
         "cancelled": "Transaction annulée",
         "submitted": "Transaction envoyée !",
-        "error": "Échec de la transaction : {error}"
+        "error": "Échec de la transaction : {error}",
+        "synced": "Transactions synchronisées avec succès!",
+        "syncError": "Échec de la synchronisation des transactions: {error}"
       },
       "created": "Compte créé avec succès !",
       "createError": "Échec de la création du compte : {error}",

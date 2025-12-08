@@ -647,7 +647,9 @@
     "resetDefaults": "重置为默认值",
     "lockWallet": "锁定钱包",
     "verifying": "验证中...",
-    "confirm": "确认"
+    "confirm": "确认",
+    "sync": "同步",
+    "syncing": "同步中..."
   },
   "placeholders": {
     "importPrivateKey": "输入私钥以导入",
@@ -1562,9 +1564,11 @@
         "missing": "No private key available"
       },
       "transaction": {
-        "cancelled": "Transaction cancelled",
-        "submitted": "Transaction submitted!",
-        "error": "Transaction failed: {error}"
+        "cancelled": "交易已取消",
+        "submitted": "交易已提交！",
+        "error": "交易失败：{error}",
+        "synced": "交易同步成功！",
+        "syncError": "同步交易失败：{error}"
       },
       "created": "Account Created Successfully!",
       "createError": "Failed to create account: {error}",
