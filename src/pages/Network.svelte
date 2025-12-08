@@ -8,10 +8,13 @@
   import PeerMetrics from '$lib/components/PeerMetrics.svelte'
   import GeoDistributionCard from '$lib/components/GeoDistributionCard.svelte'
   import GethStatusCard from '$lib/components/GethStatusCard.svelte'
+  import DHTStatus from '$lib/components/network/DHTStatus.svelte'
+  import GethNodeStatus from '$lib/components/network/GethNodeStatus.svelte'
+  import PeerList from '$lib/components/network/PeerList.svelte'
   import { peers, networkStats, networkStatus, userLocation, settings } from '$lib/stores'
   import type { AppSettings } from '$lib/stores'
   import { normalizeRegion, UNKNOWN_REGION_ID } from '$lib/geo'
-  import { Users, HardDrive, Activity, RefreshCw, UserPlus, Signal, Server, Wifi, UserMinus, Square, Play, Download, AlertCircle } from 'lucide-svelte'
+  import { Users, HardDrive, Activity, RefreshCw, UserPlus, Signal, Server } from 'lucide-svelte'
   import { onMount, onDestroy } from 'svelte'
   import { get } from 'svelte/store'
   import { invoke } from '@tauri-apps/api/core'
@@ -20,16 +23,13 @@
   import { getStatus as fetchGethStatus, type GethStatus } from '$lib/services/gethService'
   import { resetConnectionAttempts } from '$lib/dhtHelpers'
   import { relayErrorService } from '$lib/services/relayErrorService'
-  import { Clipboard } from "lucide-svelte"
   import { t } from 'svelte-i18n';
   import { showToast } from '$lib/toast';
-  import DropDown from '$lib/components/ui/dropDown.svelte'
   import { SignalingService } from '$lib/services/signalingService';
   import { createWebRTCSession } from '$lib/services/webrtcService';
   import { peerDiscoveryStore, startPeerEventStream, type PeerDiscovery } from '$lib/services/peerEventService';
   import RelayErrorMonitor from '$lib/components/RelayErrorMonitor.svelte'
   import type { GeoRegionConfig } from '$lib/geo';
-  import { calculateRegionDistance } from '$lib/services/geolocation';
   import { diagnosticLogger, errorLogger, networkLogger } from '$lib/diagnostics/logger';
 
   // Check if running in Tauri environment
@@ -45,36 +45,11 @@
   
   let discoveryRunning = false
   let newPeerAddress = ''
-  let sortBy: 'reputation' | 'sharedFiles' | 'totalSize' | 'nickname' | 'location' | 'joinDate' | 'lastSeen' | 'status' = 'reputation'
-  let sortDirection: 'asc' | 'desc' = 'desc'
-  let currentPage = 1
-  let peersPerPage = 5
   let discoveryCurrentPage = 1
   let discoveryPerPage = 5
 
-  const UNKNOWN_DISTANCE = 1_000_000;
-
-  $: if (sortBy || sortDirection) {
-    // Reset to page 1 when sorting changes
-    currentPage = 1
-  }
-
   let currentUserRegion: GeoRegionConfig = normalizeRegion(undefined);
   $: currentUserRegion = normalizeRegion($userLocation);
-  // Update sort direction when category changes to match the default
-  $: if (sortBy) {
-    const defaults: Record<typeof sortBy, 'asc' | 'desc'> = {
-      reputation: 'desc',     // Highest first
-      sharedFiles: 'desc',    // Most first
-      totalSize: 'desc',      // Largest first
-      joinDate: 'desc',       // Newest first
-      lastSeen: 'desc',       // Most Recent first
-      location: 'asc',        // Closest first
-      status: 'asc',          // Online first
-      nickname: 'asc'         // A → Z first
-    }
-    sortDirection = defaults[sortBy]
-  }
   
   // Chiral Network Node variables (status only)
   let isGethRunning = false
@@ -1547,99 +1522,21 @@
 </Card>
 
   <!-- Chiral Network Node Status Card -->
-  <Card class="p-6">
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-semibold">{$t('network.nodeStatus')}</h2>
-      <div class="flex items-center gap-2">
-        {#if !isGethInstalled}
-          <div class="h-2 w-2 bg-yellow-500 rounded-full"></div>
-          <span class="text-sm text-yellow-600">{$t('network.status.notInstalled')}</span>
-        {:else if isGethRunning}
-          <div class="h-2 w-2 bg-green-500 rounded-full animate-pulse"></div>
-          <span class="text-sm text-green-600">{$t('network.status.connected')}</span>
-        {:else}
-          <div class="h-2 w-2 bg-red-500 rounded-full"></div>
-          <span class="text-sm text-red-600">{$t('network.status.disconnected')}</span>
-        {/if}
-      </div>
-    </div>
-
-    <div class="space-y-3">
-      {#if !isGethInstalled && !isGethRunning}
-        <div class="text-center py-4">
-          <Server class="h-12 w-12 text-muted-foreground mx-auto mb-2" />
-          <p class="text-sm text-muted-foreground mb-1">
-            {isCheckingGeth ? 'Checking...' : 'Geth not installed'}
-          </p>
-          {#if !isCheckingGeth}
-            <p class="text-xs text-muted-foreground mb-3">Download and install the Chiral Network node</p>
-          {/if}
-          {#if downloadError}
-            <div class="bg-red-500/10 border border-red-500/20 rounded-lg p-2 mb-3">
-              <div class="flex items-center gap-2 justify-center">
-                <AlertCircle class="h-4 w-4 text-red-500 flex-shrink-0" />
-                <p class="text-xs text-red-500">{downloadError}</p>
-              </div>
-            </div>
-          {/if}
-          {#if !isCheckingGeth}
-            <Button on:click={downloadGeth} disabled={isDownloading}>
-              <Download class="h-4 w-4 mr-2" />
-              Download Geth
-            </Button>
-          {/if}
-        </div>
-      {:else if isGethRunning}
-        <div class="grid grid-cols-2 gap-4">
-          <div class="bg-secondary rounded-lg p-3">
-            <p class="text-sm text-muted-foreground">{$t('network.chiralPeers')}</p>
-            <p class="text-2xl font-bold">{peerCount}</p>
-          </div>
-          <div class="bg-secondary rounded-lg p-3">
-            <p class="text-sm text-muted-foreground">{$t('network.chainId')}</p>
-            <p class="text-2xl font-bold">{chainId}</p>
-          </div>
-        </div>
-        <div class="pt-2">
-          <div class="flex items-center justify-between mb-1 gap-2">
-            <p class="text-sm text-muted-foreground">{$t('network.nodeAddress')}</p>
-            <Button
-              variant="outline"
-              size="sm"
-              class="h-7 px-2"
-              on:click={async () => {
-                await copy(nodeAddress);
-                copiedNodeAddr = true;
-                setTimeout(() => (copiedNodeAddr = false), 1200);
-              }}
-            >
-              <Clipboard class="h-3.5 w-3.5 mr-1" />
-              {copiedNodeAddr ? $t('network.copied') : $t('network.copy')}
-            </Button>
-          </div>
-          <p class="text-xs font-mono break-all">{nodeAddress}</p>
-        </div>
-        <Button class="w-full mt-4" variant="outline" on:click={stopGethNode}>
-          <Square class="h-4 w-4 mr-2" />
-          Stop Node
-        </Button>
-      {:else}
-        <div class="text-center py-8">
-          <Server class="h-12 w-12 text-muted-foreground mx-auto mb-2" />
-          <p class="text-sm text-muted-foreground mb-3">Chiral Node not running</p>
-          <Button on:click={startGethNode} disabled={isStartingNode || isCheckingGeth}>
-            {#if isStartingNode}
-              <RefreshCw class="h-4 w-4 mr-2 animate-spin" />
-              Starting Node...
-            {:else}
-              <Play class="h-4 w-4 mr-2" />
-              Start Node
-            {/if}
-          </Button>
-        </div>
-      {/if}
-    </div>
-  </Card>
+  <GethNodeStatus
+    {isGethInstalled}
+    {isGethRunning}
+    {isStartingNode}
+    {isDownloading}
+    {isCheckingGeth}
+    {downloadProgress}
+    {downloadError}
+    {peerCount}
+    {chainId}
+    {nodeAddress}
+    onDownloadGeth={downloadGeth}
+    onStartGethNode={startGethNode}
+    onStopGethNode={stopGethNode}
+  />
 
   <!-- Geth Node Lifecycle & Bootstrap Health -->
   <GethStatusCard dataDir="./bin/geth-data" logLines={40} refreshIntervalMs={10000} />
