@@ -6402,7 +6402,7 @@ async fn get_connected_peer_metrics(
 ) -> Result<Vec<peer_selection::PeerMetrics>, String> {
     let dht_guard = state.dht.lock().await;
     if let Some(ref dht) = *dht_guard {
-        Ok(dht.get_connected_peer_metrics().await)
+        Ok(dht.get_peer_metrics().await)
     } else {
         Err("DHT service not available".to_string())
     }
