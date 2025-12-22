@@ -76,7 +76,7 @@ Welcome Screen
 
 ## Known Limitations
 - Only supports English wordlist (EN)
-- Hardcoded BIP44 derivation path: m/44'/60'/0'/0/0
+- Fixed BIP44 derivation path structure: m/44'/<chainId>'/0'/0/0 (coin type derived from chainId; default 98765)
 - No support for custom derivation paths
 - No support for multiple accounts during recovery (derives only first account)
 
