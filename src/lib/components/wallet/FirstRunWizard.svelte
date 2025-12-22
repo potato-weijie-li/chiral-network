@@ -82,6 +82,7 @@
   function handleMnemonicCancel() {
     showMnemonicWizard = false
     mode = 'welcome'
+    mnemonicMode = 'create'
   }
 
   const msg = (key: string, fallback: string) => {
