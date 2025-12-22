@@ -32,7 +32,9 @@ Added ability to recover an existing wallet from a 12-word or 24-word mnemonic p
 ```
 abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about
 ```
-Expected address: `0x9858EfFD232B4033E47d90003D41EC34EcaEda94`
+Expected address: `0x7608d2d3219132ffe9c78c3ac3496f9018e77b53`
+
+**Note**: Address is derived using BIP44 path `m/44'/<chainId>'/0'/0/0` where chainId is your Chiral Network chain ID (default: 98765). This differs from standard Ethereum which uses coinType 60.
 
 ### Existing Functionality (should still work):
 - ✅ Create New Wallet → generates new 12/24-word phrase
