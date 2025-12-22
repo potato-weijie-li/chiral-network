@@ -13,7 +13,8 @@
   export let onComplete: () => void
 
   let showMnemonicWizard = false
-  let mode: 'welcome' | 'mnemonic' | 'import' = 'welcome'
+  let mode: 'welcome' | 'mnemonic' | 'import' | 'recover' = 'welcome'
+  let mnemonicMode: 'create' | 'import' = 'create'
   let importPrivateKey = ''
   let isImportingAccount = false
   let importedSnapshot: any = null
@@ -70,6 +71,12 @@
       // showToast('Failed to create test wallet', 'error')
       showToast($t('toasts.account.firstRun.testWalletError'), 'error')
     }
+  }
+
+  function handleRecoverWallet() {
+    mode = 'recover'
+    mnemonicMode = 'import'
+    showMnemonicWizard = true
   }
 
   function handleMnemonicCancel() {
@@ -217,6 +224,12 @@
                 ? 'Import Existing Wallet'
                 : $t('account.firstRun.importWallet')}
           </Button>
+
+          <Button on:click={handleRecoverWallet} variant="outline" class="w-full py-6 text-lg">
+            {$t('account.firstRun.recoverWallet') === 'account.firstRun.recoverWallet'
+                ? 'Recover from Recovery Phrase'
+                : $t('account.firstRun.recoverWallet')}
+          </Button>
           
           {#if import.meta.env.DEV}
             <div class="relative">
@@ -311,7 +324,7 @@
 
 {#if showMnemonicWizard}
   <MnemonicWizard
-    mode="create"
+    mode={mnemonicMode}
     onComplete={handleMnemonicComplete}
     onCancel={handleMnemonicCancel}
   />
